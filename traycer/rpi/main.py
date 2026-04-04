@@ -27,13 +27,7 @@ from config import (
     NFC_TIMEOUT,
 )
 from nfc_reader import init_nfc, read_uid, wait_for_tag, wait_for_removal
-from qr_reader import (
-    read_qr_manual,
-    read_qr_file,
-    read_qr_camera,
-    init_camera,
-    capture_photo,
-)
+from qr_reader import read_qr_manual, read_qr_file, read_qr_camera, init_camera, capture_photo
 from backend_client import validate_session, complete_session, deposit_return
 
 

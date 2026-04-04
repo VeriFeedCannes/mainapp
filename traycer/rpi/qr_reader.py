@@ -1,16 +1,21 @@
 """
-Traycer Station — QR Reader
+Traycer Station — QR Reader + Photo Capture
 
-Three modes:
+Camera uses two configurations:
+  - VIDEO config (640x480) for fast continuous QR scanning (~20fps)
+  - STILL config (1640x1232) for high-res deposit photos
+
+Modes:
   "manual"  → user pastes the QR JSON payload in the terminal
   "file"    → decode QR from an image file on disk (pyzbar)
-  "camera"  → continuous camera feed, scans every frame for QR (picamera2 + pyzbar)
-
-All modes return the parsed JSON dict or None.
+  "camera"  → continuous video feed, scans every frame for QR
 """
 
 import json
 import time
+
+from pyzbar.pyzbar import decode as pyzbar_decode
+from PIL import Image
 
 
 # ──────────────────────────────────────────────
@@ -22,7 +27,7 @@ def read_qr_manual():
     print()
     print("-" * 40)
     print("[QR] Mode manuel — colle le payload QR")
-    print("[QR] (format: {\"s\":\"trc_xxx\",\"t\":\"cannes-1\",\"a\":\"pickup\",\"e\":...})")
+    print('[QR] (format: {"s":"trc_xxx","t":"cannes-1","a":"pickup","e":...})')
     print("[QR] ou tape 'q' pour quitter")
     print("-" * 40)
 
@@ -50,15 +55,8 @@ def read_qr_manual():
 def read_qr_file(image_path):
     """Decode a QR code from an image file."""
     try:
-        from pyzbar.pyzbar import decode
-        from PIL import Image
-    except ImportError:
-        print("[QR] pyzbar ou Pillow manquant — pip install pyzbar Pillow")
-        return None
-
-    try:
         img = Image.open(image_path)
-        decoded = decode(img)
+        decoded = pyzbar_decode(img)
         for obj in decoded:
             if obj.type == "QRCODE":
                 try:
@@ -79,38 +77,58 @@ def read_qr_file(image_path):
 
 
 # ──────────────────────────────────────────────
-# Camera mode — continuous feed
+# Camera — dual config (video for QR, still for photos)
 # ──────────────────────────────────────────────
 
 _camera = None
-_camera_started = False
+_camera_mode = None  # "video" or "still"
 
 
 def init_camera():
-    """Start the Pi camera once. Call this before using camera mode."""
-    global _camera, _camera_started
-    if _camera_started:
+    """Initialize Picamera2 in video mode for fast QR scanning."""
+    global _camera, _camera_mode
+    if _camera is not None:
         return
 
     from picamera2 import Picamera2
 
     _camera = Picamera2()
-    config = _camera.create_still_configuration(main={"size": (640, 480)})
+    _switch_to_video()
+    print("[CAM] Camera ready (video mode for QR scanning)")
+
+
+def _switch_to_video():
+    """Switch camera to video config (fast, low-res for QR)."""
+    global _camera_mode
+    if _camera_mode == "video":
+        return
+    if _camera_mode is not None:
+        _camera.stop()
+    config = _camera.create_video_configuration(main={"size": (640, 480)})
     _camera.configure(config)
     _camera.start()
-    _camera_started = True
-    time.sleep(1)  # warmup
-    print("[CAM] Camera ready — continuous scanning")
+    _camera_mode = "video"
+    time.sleep(0.3)
 
 
-def _decode_frame(frame):
-    """Try to find a valid Traycer QR in a single frame."""
-    from pyzbar.pyzbar import decode
-    from PIL import Image
+def _switch_to_still():
+    """Switch camera to still config (higher res for deposit photo)."""
+    global _camera_mode
+    if _camera_mode == "still":
+        return
+    if _camera_mode is not None:
+        _camera.stop()
+    config = _camera.create_still_configuration(main={"size": (1640, 1232)})
+    _camera.configure(config)
+    _camera.start()
+    _camera_mode = "still"
+    time.sleep(0.5)
 
+
+def _try_decode_qr(frame):
+    """Try to find a valid Traycer QR in a numpy frame."""
     img = Image.fromarray(frame)
-    decoded = decode(img)
-
+    decoded = pyzbar_decode(img)
     for obj in decoded:
         if obj.type == "QRCODE":
             try:
@@ -123,59 +141,27 @@ def _decode_frame(frame):
 
 
 def read_qr_camera():
-    """Capture one frame and try to decode a QR. Non-blocking, returns quickly."""
-    if not _camera_started:
+    """Capture one video frame and try to decode a QR. Fast, non-blocking."""
+    if _camera is None:
         init_camera()
-
+    _switch_to_video()
     frame = _camera.capture_array()
-    return _decode_frame(frame)
+    return _try_decode_qr(frame)
 
-
-def scan_until_qr(timeout_seconds=300):
-    """
-    Continuously scan camera frames until a valid QR is found.
-    Prints a dot every second to show it's alive.
-    Returns parsed QR data or None on timeout.
-    """
-    if not _camera_started:
-        init_camera()
-
-    print(f"[CAM] Scanning for QR code (timeout {timeout_seconds}s)...")
-    deadline = time.time() + timeout_seconds
-    last_dot = time.time()
-    frames = 0
-
-    while time.time() < deadline:
-        frame = _camera.capture_array()
-        frames += 1
-        result = _decode_frame(frame)
-
-        if result:
-            print(f"\n[CAM] ✅ QR found after {frames} frames — session: {result['s']}")
-            return result
-
-        # Progress indicator
-        now = time.time()
-        if now - last_dot > 2:
-            elapsed = int(now - (deadline - timeout_seconds))
-            print(f"  [scanning... {elapsed}s / {frames} frames]", end="\r")
-            last_dot = now
-
-        time.sleep(0.05)  # ~20 fps scan rate
-
-    print(f"\n[CAM] Timeout after {frames} frames")
-    return None
-
-
-# ──────────────────────────────────────────────
-# Photo capture (for deposit / waste analysis)
-# ──────────────────────────────────────────────
 
 def capture_photo(filename="deposit_photo.jpg"):
-    """Capture a photo for waste analysis. Returns filename or None."""
-    if not _camera_started:
-        print("[CAM] No camera available — skipping photo capture")
+    """
+    Switch to still mode, capture a high-res photo, then switch back to video.
+    Returns filename or None.
+    """
+    if _camera is None:
+        print("[CAM] No camera — skipping photo")
         return None
+
+    print("[CAM] Switching to still mode for photo...")
+    _switch_to_still()
     _camera.capture_file(filename)
     print(f"[CAM] Photo saved: {filename}")
+
+    _switch_to_video()
     return filename
