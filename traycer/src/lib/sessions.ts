@@ -27,15 +27,38 @@ export interface ReturnSignal {
   created_at: number;
 }
 
+export interface PendingArxAuth {
+  address: string;
+  timestamp: number;
+}
+
+export type PendingSignStatus = "pending" | "completed" | "failed";
+
+export interface PendingSignRequest {
+  id: string;
+  address: string;
+  badgeId: number;
+  digestHex: string;
+  unsignedTxSerialized: string;
+  chainId: number;
+  status: PendingSignStatus;
+  txHash: string | null;
+  error: string | null;
+  createdAt: number;
+}
+
 // Survive Next.js hot-reload in dev mode
 const g = globalThis as unknown as {
   __traycer_sessions?: Map<string, Session>;
   __traycer_plates?: Map<string, PlateAssociation>;
   __traycer_signals?: Map<string, ReturnSignal>;
+  __traycer_pending_arx?: PendingArxAuth | null;
+  __traycer_pending_signs?: Map<string, PendingSignRequest>;
 };
 const sessions = (g.__traycer_sessions ??= new Map<string, Session>());
 const plateAssociations = (g.__traycer_plates ??= new Map<string, PlateAssociation>());
 const returnSignals = (g.__traycer_signals ??= new Map<string, ReturnSignal>());
+const pendingSigns = (g.__traycer_pending_signs ??= new Map<string, PendingSignRequest>());
 
 const STATION_SECRET = process.env.STATION_SECRET || "dev-station-secret";
 const SESSION_TTL = 120_000; // 2 minutes
@@ -226,6 +249,23 @@ export function clearAllForWallet(wallet: string): void {
   }
 }
 
+export function claimSessionByWallet(
+  wallet: string,
+): Session | null {
+  cleanExpired();
+  for (const s of sessions.values()) {
+    if (
+      s.wallet.toLowerCase() === wallet.toLowerCase() &&
+      s.status === "active" &&
+      Date.now() <= s.expires_at
+    ) {
+      s.status = "scanned";
+      return s;
+    }
+  }
+  return null;
+}
+
 export function buildQrPayload(session: Session) {
   return {
     s: session.session_id,
@@ -233,4 +273,119 @@ export function buildQrPayload(session: Session) {
     a: session.action,
     e: Math.floor(session.expires_at / 1000),
   };
+}
+
+// ── Arx wristband pending auth ──
+
+const ARX_AUTH_TTL = 30_000; // 30 seconds
+
+export function setPendingArxAuth(address: string): void {
+  g.__traycer_pending_arx = { address, timestamp: Date.now() };
+}
+
+export function consumePendingArxAuth(): PendingArxAuth | null {
+  const pending = g.__traycer_pending_arx;
+  if (!pending) return null;
+  if (Date.now() - pending.timestamp > ARX_AUTH_TTL) {
+    g.__traycer_pending_arx = null;
+    return null;
+  }
+  g.__traycer_pending_arx = null;
+  return pending;
+}
+
+export function peekPendingArxAuth(): PendingArxAuth | null {
+  const pending = g.__traycer_pending_arx;
+  if (!pending) return null;
+  if (Date.now() - pending.timestamp > ARX_AUTH_TTL) {
+    g.__traycer_pending_arx = null;
+    return null;
+  }
+  return pending;
+}
+
+// ── Arx wristband pending sign requests ──
+
+const SIGN_REQUEST_TTL = 60_000; // 60 seconds
+
+function generateSignId(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let id = "sig_";
+  for (let i = 0; i < 8; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
+
+function cleanExpiredSigns() {
+  const now = Date.now();
+  for (const [id, req] of pendingSigns) {
+    if (now - req.createdAt > SIGN_REQUEST_TTL && req.status === "pending") {
+      pendingSigns.delete(id);
+    }
+  }
+}
+
+export function createPendingSign(
+  address: string,
+  badgeId: number,
+  digestHex: string,
+  unsignedTxSerialized: string,
+  chainId: number,
+): PendingSignRequest {
+  cleanExpiredSigns();
+
+  // Cancel any existing pending request for this address
+  for (const [id, req] of pendingSigns) {
+    if (req.address.toLowerCase() === address.toLowerCase() && req.status === "pending") {
+      pendingSigns.delete(id);
+    }
+  }
+
+  const request: PendingSignRequest = {
+    id: generateSignId(),
+    address: address.toLowerCase(),
+    badgeId,
+    digestHex,
+    unsignedTxSerialized,
+    chainId,
+    status: "pending",
+    txHash: null,
+    error: null,
+    createdAt: Date.now(),
+  };
+
+  pendingSigns.set(request.id, request);
+  return request;
+}
+
+export function getPendingSignByAddress(address: string): PendingSignRequest | null {
+  cleanExpiredSigns();
+  for (const req of pendingSigns.values()) {
+    if (req.address.toLowerCase() === address.toLowerCase() && req.status === "pending") {
+      return req;
+    }
+  }
+  return null;
+}
+
+export function getPendingSignById(id: string): PendingSignRequest | null {
+  cleanExpiredSigns();
+  return pendingSigns.get(id) ?? null;
+}
+
+export function completePendingSign(id: string, txHash: string): boolean {
+  const req = pendingSigns.get(id);
+  if (!req) return false;
+  req.status = "completed";
+  req.txHash = txHash;
+  return true;
+}
+
+export function failPendingSign(id: string, error: string): boolean {
+  const req = pendingSigns.get(id);
+  if (!req) return false;
+  req.status = "failed";
+  req.error = error;
+  return true;
 }

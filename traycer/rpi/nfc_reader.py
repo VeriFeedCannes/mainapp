@@ -27,6 +27,21 @@ def init_nfc():
     return _pn532
 
 
+def get_pn532():
+    """Return the raw PN532 instance (for APDU commands)."""
+    return _pn532
+
+
+def release_target():
+    """Send InRelease to free the PN532 target slot after APDU exchange."""
+    if _pn532 is None:
+        return
+    try:
+        _pn532.call_function(0x52, params=bytearray([0x00]))
+    except Exception:
+        pass
+
+
 def read_uid(timeout=0.5):
     """
     Try to read a passive NFC tag.
@@ -35,7 +50,15 @@ def read_uid(timeout=0.5):
     if _pn532 is None:
         raise RuntimeError("NFC not initialized — call init_nfc() first")
 
-    uid = _pn532.read_passive_target(timeout=timeout)
+    try:
+        uid = _pn532.read_passive_target(timeout=timeout)
+    except RuntimeError:
+        # PN532 can be in a bad state after APDU exchange; reset it
+        try:
+            _pn532.SAM_configuration()
+        except Exception:
+            pass
+        return None
     if uid is not None:
         return ":".join(f"{b:02X}" for b in uid)
     return None

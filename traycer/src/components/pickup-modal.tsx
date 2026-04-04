@@ -3,9 +3,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { QrDisplay } from "@/components/qr-display";
 import { useAuth } from "@/lib/auth-context";
+import { useMiniKit } from "@/lib/minikit-provider";
 import { X, Loader2, CheckCircle2, AlertCircle, Nfc, ScanLine } from "lucide-react";
 
-type ModalStep = "loading" | "show-qr" | "qr-confirmed" | "done";
+type ModalStep = "loading" | "identify" | "place-tray" | "done";
 
 interface PickupModalProps {
   open: boolean;
@@ -14,6 +15,7 @@ interface PickupModalProps {
 
 export function PickupModal({ open, onClose }: PickupModalProps) {
   const { walletAddress, setPlate } = useAuth();
+  const { isReady: isInWorldApp } = useMiniKit();
   const [qrPayload, setQrPayload] = useState<Record<string, unknown> | null>(null);
   const [step, setStep] = useState<ModalStep>("loading");
   const [error, setError] = useState<string | null>(null);
@@ -55,8 +57,10 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
         setError(data.error);
         return;
       }
-      setQrPayload(data.qr_payload);
-      setStep("show-qr");
+      if (isInWorldApp) {
+        setQrPayload(data.qr_payload);
+      }
+      setStep("identify");
       startPolling();
     } catch {
       setError("Network error");
@@ -91,10 +95,10 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
         }
 
         if (data.session?.status === "scanned") {
-          setStep("qr-confirmed");
+          setStep("place-tray");
         }
 
-        if (!data.session && !data.plate && step === "show-qr") {
+        if (!data.session && !data.plate && step === "identify") {
           pollingRef.current = false;
           createSession();
           return;
@@ -124,9 +128,9 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
         {/* Step indicator */}
         {step !== "loading" && (
           <div className="mb-5 flex items-center gap-2 px-2">
-            <StepDot active={step === "show-qr"} done={step === "qr-confirmed" || step === "done"} label="1" />
-            <div className={`h-0.5 flex-1 rounded-full transition-colors ${step === "qr-confirmed" || step === "done" ? "bg-primary" : "bg-muted"}`} />
-            <StepDot active={step === "qr-confirmed"} done={step === "done"} label="2" />
+            <StepDot active={step === "identify"} done={step === "place-tray" || step === "done"} label="1" />
+            <div className={`h-0.5 flex-1 rounded-full transition-colors ${step === "place-tray" || step === "done" ? "bg-primary" : "bg-muted"}`} />
+            <StepDot active={step === "place-tray"} done={step === "done"} label="2" />
             <div className={`h-0.5 flex-1 rounded-full transition-colors ${step === "done" ? "bg-primary" : "bg-muted"}`} />
             <StepDot active={false} done={step === "done"} label="3" />
           </div>
@@ -156,8 +160,8 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
           </div>
         )}
 
-        {/* STEP 1: Show QR */}
-        {step === "show-qr" && qrPayload && (
+        {/* STEP 1 — World App: Show QR */}
+        {step === "identify" && isInWorldApp && qrPayload && (
           <div className="flex flex-col items-center gap-4">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/20">
               <ScanLine className="h-6 w-6 text-primary" />
@@ -174,13 +178,38 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
           </div>
         )}
 
-        {/* STEP 2: QR Confirmed — Place tray */}
-        {step === "qr-confirmed" && (
+        {/* STEP 1 — Wristband: Tap wristband */}
+        {step === "identify" && !isInWorldApp && (
+          <div className="flex flex-col items-center gap-4 py-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/20">
+              <Nfc className="h-7 w-7 text-primary animate-pulse" />
+            </div>
+            <h2 className="text-xl font-bold">Tap your wristband</h2>
+            <div className="mt-2 flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-primary/40 px-6 py-6">
+              <Nfc className="h-10 w-10 text-primary" />
+              <p className="text-center font-medium">
+                Hold your wristband on the station reader
+              </p>
+              <p className="text-center text-xs text-muted-foreground">
+                The station will identify you automatically
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              Waiting for wristband…
+            </div>
+          </div>
+        )}
+
+        {/* STEP 2: Identity confirmed — Place tray */}
+        {step === "place-tray" && (
           <div className="flex flex-col items-center gap-4 py-4">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-green-500/20">
               <CheckCircle2 className="h-7 w-7 text-green-500" />
             </div>
-            <h2 className="text-xl font-bold">QR confirmed!</h2>
+            <h2 className="text-xl font-bold">
+              {isInWorldApp ? "QR confirmed!" : "Wristband detected!"}
+            </h2>
             <div className="mt-2 flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-primary/40 px-6 py-6">
               <Nfc className="h-10 w-10 text-primary animate-pulse" />
               <p className="text-center font-medium">

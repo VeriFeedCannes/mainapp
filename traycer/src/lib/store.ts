@@ -104,7 +104,7 @@ function persistToFile(): void {
 
     const snapshot: StoreSnapshot = {
       users: Array.from(users.values()),
-      deposits: deposits.map(({ photo_base64: _, ...rest }) => rest),
+      deposits: [...deposits],
       claims: [...claims],
       onchainClaims: [...onchainClaims],
       redemptions: [...redemptions],

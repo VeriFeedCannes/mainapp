@@ -25,8 +25,9 @@ from config import (
     SESSION_TIMEOUT,
     NFC_TIMEOUT,
 )
-from nfc_reader import init_nfc, read_uid, wait_for_tag, wait_for_removal
+from nfc_reader import init_nfc, read_uid, wait_for_tag, wait_for_removal, get_pn532, release_target
 from qr_reader import read_qr_manual, read_qr_file, read_qr_camera, init_camera, capture_photo, pause_camera, resume_camera, warmup_still, snap_still
+from halo_reader import is_wristband_uid, read_halo_address, halo_sign_digest
 from backend_client import (
     validate_session,
     complete_session,
@@ -35,6 +36,10 @@ from backend_client import (
     signal_return_ready,
     poll_capture_signal,
     signal_return_done,
+    arx_connect,
+    arx_session_claim,
+    check_pending_sign,
+    submit_sign_result,
 )
 
 
@@ -50,6 +55,14 @@ for i, arg in enumerate(sys.argv):
 _last_ignored_uid = None
 _last_ignored_time = 0
 IGNORED_COOLDOWN = 4  # seconds before re-checking same tag
+
+# Cooldown for wristband auth (same chip)
+_last_wristband_uid = None
+_last_wristband_time = 0
+WRISTBAND_COOLDOWN = 1  # seconds
+
+# Cache: UID → Ethereum address (so we skip NDEF on sign taps)
+_wristband_address_cache: dict = {}
 
 
 def banner():
@@ -82,6 +95,159 @@ def clear_ignored():
     global _last_ignored_uid, _last_ignored_time
     _last_ignored_uid = None
     _last_ignored_time = 0
+
+
+def is_wristband_cooldown(uid):
+    global _last_wristband_uid, _last_wristband_time
+    now = time.time()
+    if uid == _last_wristband_uid and (now - _last_wristband_time) < WRISTBAND_COOLDOWN:
+        return True
+    return False
+
+
+def mark_wristband(uid):
+    global _last_wristband_uid, _last_wristband_time
+    _last_wristband_uid = uid
+    _last_wristband_time = time.time()
+
+
+def _try_pending_sign(pn532, address):
+    """Check for a pending sign request and execute if found. Returns True if handled."""
+    pending = check_pending_sign(address)
+    if not pending or not pending.get("digestHex"):
+        return False
+
+    request_id = pending["requestId"]
+    digest_hex = pending["digestHex"]
+    print(f"[WRISTBAND] Pending sign {request_id} — sending B0 51...")
+
+    sig = halo_sign_digest(pn532, digest_hex)
+    release_target()
+
+    if sig:
+        print("[WRISTBAND] Signature obtained — submitting")
+        submit_sign_result(request_id, sig)
+    else:
+        print("[WRISTBAND] Sign APDU failed")
+    return True
+
+
+def _wait_for_tray(timeout_seconds):
+    """Wait for a non-wristband NFC tag (tray). Ignores wristband UIDs."""
+    print(f"[NFC] Waiting for tray tag (timeout {timeout_seconds}s, ignoring wristbands)...")
+    deadline = time.time() + timeout_seconds
+
+    while time.time() < deadline:
+        uid = read_uid(timeout=0.5)
+        if uid:
+            if is_wristband_uid(uid):
+                continue
+            print(f"[NFC] Tray tag detected: {uid}")
+            return uid
+        time.sleep(0.05)
+
+    print("[NFC] Timeout — no tray tag detected")
+    return None
+
+
+def _try_session_pickup(address):
+    """Check for a pending pickup session and execute if found. Returns True if handled."""
+    session = arx_session_claim(address)
+    if not session or session.get("action") != "pickup":
+        return False
+
+    session_id = session["session_id"]
+    release_target()
+
+    print()
+    print("  ┌─────────────────────────────────┐")
+    print("  │   Place the tray on the reader   │")
+    print("  └─────────────────────────────────┘")
+    print()
+
+    pause_camera()
+    tray_uid = _wait_for_tray(timeout_seconds=SESSION_TIMEOUT)
+
+    if not tray_uid:
+        print("[WRISTBAND] Timeout — no tray detected")
+        resume_camera()
+        return True
+
+    result = complete_session(session_id, tray_uid)
+    if result:
+        print(f"[WRISTBAND] Tray {tray_uid} linked to {address}")
+    else:
+        print("[WRISTBAND] Failed to complete session")
+
+    print("[WRISTBAND] Remove the tray from the reader...")
+    wait_for_removal()
+    mark_ignored(tray_uid)
+    resume_camera()
+    return True
+
+
+def handle_wristband(uid):
+    """Arx HaLo wristband detected — sign tx, pickup tray, or connect."""
+    if is_wristband_cooldown(uid):
+        return
+
+    print(f"\n{'─' * 40}")
+    print(f"[WRISTBAND] HaLo chip detected: {uid}")
+
+    pn532 = get_pn532()
+    if pn532 is None:
+        print("[WRISTBAND] PN532 not available")
+        mark_wristband(uid)
+        return
+
+    cached_address = _wristband_address_cache.get(uid)
+
+    if cached_address:
+        print(f"[WRISTBAND] Cached address: {cached_address}")
+
+        if _try_pending_sign(pn532, cached_address):
+            mark_wristband(uid)
+            print(f"{'─' * 40}\n")
+            return
+
+        if _try_session_pickup(cached_address):
+            mark_wristband(uid)
+            print(f"{'─' * 40}\n")
+            return
+
+        release_target()
+        arx_connect(cached_address)
+        mark_wristband(uid)
+        print(f"{'─' * 40}\n")
+        return
+
+    # First time seeing this UID — full NDEF read
+    address = read_halo_address(pn532)
+
+    if not address:
+        release_target()
+        print("[WRISTBAND] NDEF read failed — will retry on next tap")
+        mark_wristband(uid)
+        print(f"{'─' * 40}\n")
+        return
+
+    print(f"[WRISTBAND] Ethereum address: {address}")
+    _wristband_address_cache[uid] = address
+
+    if _try_pending_sign(pn532, address):
+        mark_wristband(uid)
+        print(f"{'─' * 40}\n")
+        return
+
+    if _try_session_pickup(address):
+        mark_wristband(uid)
+        print(f"{'─' * 40}\n")
+        return
+
+    release_target()
+    arx_connect(address)
+    mark_wristband(uid)
+    print(f"{'─' * 40}\n")
 
 
 # ──────────────────────────────────────────
@@ -228,7 +394,10 @@ def run_camera_loop():
         # Quick NFC check (100ms, no camera switch)
         uid = read_uid(timeout=0.1)
         if uid:
-            try_return(uid)
+            if is_wristband_uid(uid):
+                handle_wristband(uid)
+            else:
+                try_return(uid)
 
         # Scan one frame for QR
         qr_data = read_qr_camera()
@@ -253,6 +422,9 @@ def run_manual_loop():
     while True:
         uid = read_uid(timeout=NFC_TIMEOUT)
         if uid:
+            if is_wristband_uid(uid):
+                handle_wristband(uid)
+                continue
             if try_return(uid):
                 continue
 
@@ -273,6 +445,9 @@ def run_file_loop():
     while True:
         uid = read_uid(timeout=NFC_TIMEOUT)
         if uid:
+            if is_wristband_uid(uid):
+                handle_wristband(uid)
+                continue
             if try_return(uid):
                 continue
 

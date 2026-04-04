@@ -317,14 +317,16 @@ export default function RewardsPage() {
         </Card>
       )}
 
-      {/* Premium badge (World ID) */}
-      <PremiumClaimCard
-        walletAddress={walletAddress}
-        isConnected={isConnected}
-        isInWorldApp={isInWorldApp}
-        alreadyClaimed={onchainBadges.some((b) => b.badgeId === 4)}
-        onClaimed={fetchData}
-      />
+      {/* Premium badge (World ID) — only for World App users */}
+      {isInWorldApp && (
+        <PremiumClaimCard
+          walletAddress={walletAddress}
+          isConnected={isConnected}
+          isInWorldApp={isInWorldApp}
+          alreadyClaimed={onchainBadges.some((b) => b.badgeId === 4)}
+          onClaimed={fetchData}
+        />
+      )}
 
     </div>
   );
@@ -351,6 +353,7 @@ function FirstReturnHeroCard({
   const [error, setError] = useState<string | null>(null);
   const [justRedeemed, setJustRedeemed] = useState(false);
   const [redeemTxHash, setRedeemTxHash] = useState<string | null>(null);
+  const [arxSignStatus, setArxSignStatus] = useState<string | null>(null);
   const [couponCode] = useState(() => {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     const seg = () =>
@@ -387,73 +390,109 @@ function FirstReturnHeroCard({
     } catch { /* silent */ }
   };
 
-  const handleRedeem = async () => {
+  const handleRedeemArx = async () => {
+    if (!walletAddress || loading || status !== "minted") return;
+    setLoading(true);
+    setError(null);
+    setArxSignStatus("Preparing transaction…");
+
+    try {
+      const prepRes = await fetch("/api/arx/prepare-redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: walletAddress, badgeId: 1 }),
+      });
+      const prepData = await prepRes.json();
+      if (!prepData.requestId) {
+        throw new Error(prepData.error || "Failed to prepare transaction");
+      }
+
+      const requestId = prepData.requestId as string;
+      setArxSignStatus("Tap your wristband on the station to sign…");
+
+      const POLL_INTERVAL = 1000;
+      const POLL_TIMEOUT = 45_000;
+      const start = Date.now();
+
+      while (Date.now() - start < POLL_TIMEOUT) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+        const statusRes = await fetch(`/api/arx/sign-status?id=${requestId}`);
+        const statusData = await statusRes.json();
+
+        if (statusData.status === "completed" && statusData.txHash) {
+          setArxSignStatus(null);
+          await confirmRedemption(statusData.txHash);
+          setLoading(false);
+          return;
+        }
+        if (statusData.status === "failed") {
+          throw new Error(statusData.error || "Signing failed");
+        }
+      }
+
+      throw new Error("Timeout — no wristband signature received");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Error");
+      setArxSignStatus(null);
+    }
+    setLoading(false);
+  };
+
+  const handleRedeemWorld = async () => {
     if (!walletAddress || loading || status !== "minted") return;
     setLoading(true);
     setError(null);
 
     try {
-      let txHashResult: string;
+      const calldata = encodeFunctionData({
+        abi: REDEEM_ABI,
+        functionName: "redeemBadge",
+        args: [BigInt(1)],
+      });
 
-      if (!isInWorldApp) {
-        await new Promise((r) => setTimeout(r, 1500));
-        txHashResult =
-          "0x" +
-          Array.from({ length: 64 }, () =>
-            Math.floor(Math.random() * 16).toString(16),
-          ).join("");
-      } else {
-        const calldata = encodeFunctionData({
-          abi: REDEEM_ABI,
-          functionName: "redeemBadge",
-          args: [BigInt(1)],
-        });
+      const result = await MiniKit.sendTransaction({
+        chainId: 480,
+        transactions: [
+          {
+            to: BADGE_CONTRACT as `0x${string}`,
+            data: calldata,
+            value: "0x0",
+          },
+        ],
+      });
 
-        const result = await MiniKit.sendTransaction({
-          chainId: 480,
-          transactions: [
-            {
-              to: BADGE_CONTRACT as `0x${string}`,
-              data: calldata,
-              value: "0x0",
-            },
-          ],
-        });
-
-        if (result.executedWith === "fallback") {
-          setError("Transaction cancelled");
-          setLoading(false);
-          return;
-        }
-
-        const { userOpHash } = result.data;
-
-        // Resolve userOpHash → real transaction hash via World Developer API
-        let resolvedHash = userOpHash;
-        for (let i = 0; i < 15; i++) {
-          await new Promise((r) => setTimeout(r, 2000));
-          try {
-            const opRes = await fetch(
-              `https://developer.world.org/api/v2/minikit/userop/${userOpHash}`,
-            );
-            const opData = await opRes.json();
-            if (opData.status === "success" && opData.transaction_hash) {
-              resolvedHash = opData.transaction_hash;
-              break;
-            }
-          } catch { /* retry */ }
-        }
-
-        txHashResult = resolvedHash;
+      if (result.executedWith === "fallback") {
+        setError("Transaction cancelled");
+        setLoading(false);
+        return;
       }
 
-      await confirmRedemption(txHashResult);
+      const { userOpHash } = result.data;
+
+      let resolvedHash = userOpHash;
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const opRes = await fetch(
+            `https://developer.world.org/api/v2/minikit/userop/${userOpHash}`,
+          );
+          const opData = await opRes.json();
+          if (opData.status === "success" && opData.transaction_hash) {
+            resolvedHash = opData.transaction_hash;
+            break;
+          }
+        } catch { /* retry */ }
+      }
+
+      await confirmRedemption(resolvedHash);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Error");
     }
 
     setLoading(false);
   };
+
+  const handleRedeem = isInWorldApp ? handleRedeemWorld : handleRedeemArx;
 
   const borderClass =
     status === "redeemed"
@@ -540,17 +579,14 @@ function FirstReturnHeroCard({
                 {loading ? (
                   <span className="flex items-center justify-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Sending transaction…
+                    {arxSignStatus || "Sending transaction…"}
                   </span>
-                ) : (
+                ) : isInWorldApp ? (
                   "Redeem for Coffee Coupon"
+                ) : (
+                  "Redeem with Wristband"
                 )}
               </button>
-              {!isInWorldApp && (
-                <p className="mt-2 text-center text-[10px] text-muted-foreground">
-                  Dev mode — sendTransaction will be simulated
-                </p>
-              )}
             </div>
           )}
 
@@ -577,6 +613,17 @@ function FirstReturnHeroCard({
                 </div>
                 <span className="text-3xl">☕</span>
               </div>
+              {txHash && (
+                <a
+                  href={`https://worldscan.org/tx/${txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                >
+                  <Link2 className="h-3 w-3" />
+                  View redeem transaction ↗
+                </a>
+              )}
             </div>
           )}
 

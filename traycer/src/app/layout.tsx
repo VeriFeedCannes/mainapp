@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 import { ThemeProvider } from "@/lib/theme-provider";
 import { MiniKitProvider } from "@/lib/minikit-provider";
@@ -29,6 +30,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${geist.variable} antialiased`}>
+        <Script src="/libhalo.js" strategy="beforeInteractive" />
         <ThemeProvider>
           <MiniKitProvider>
             <AuthProvider>

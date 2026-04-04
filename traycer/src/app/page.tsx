@@ -98,16 +98,42 @@ export default function HomePage() {
     }
   }, [isConnected, walletAddress, fetchDashboard]);
 
-  const handleConnect = async () => {
+  const [arxStatus, setArxStatus] = useState<string | null>(null);
+
+  const handleConnectArx = async () => {
+    if (authLoading) return;
     setAuthLoading(true);
+    setArxStatus("Tap your wristband on the station…");
 
-    if (!isInWorldApp) {
-      await new Promise((r) => setTimeout(r, 600));
-      setAuth("0xDEV1234567890abcdef1234567890abcdef1234", "DevUser");
-      setAuthLoading(false);
-      return;
+    const POLL_INTERVAL = 1000;
+    const POLL_TIMEOUT = 30_000;
+    const start = Date.now();
+
+    try {
+      while (Date.now() - start < POLL_TIMEOUT) {
+        const res = await fetch("/api/auth/arx-status");
+        const data = await res.json();
+
+        if (data.ready && data.address) {
+          const addr = data.address as string;
+          const displayName = `Wristband ${addr.slice(0, 6)}…${addr.slice(-4)}`;
+          setAuth(addr, displayName);
+          setArxStatus(null);
+          setAuthLoading(false);
+          return;
+        }
+
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+      }
+      setArxStatus("Timeout — try again");
+    } catch {
+      setArxStatus("Connection error — try again");
     }
+    setAuthLoading(false);
+  };
 
+  const handleConnectWorld = async () => {
+    setAuthLoading(true);
     try {
       const nonceRes = await fetch("/api/nonce");
       const { nonce } = await nonceRes.json();
@@ -144,9 +170,10 @@ export default function HomePage() {
         setAuth(address, displayName);
       }
     } catch { /* silent */ }
-
     setAuthLoading(false);
   };
+
+  const handleConnect = isInWorldApp ? handleConnectWorld : handleConnectArx;
 
   // Elapsed timer since pickup
   const [now, setNow] = useState(Date.now());
@@ -186,12 +213,21 @@ export default function HomePage() {
           {authLoading ? (
             <>
               <Loader2 className="h-5 w-5 animate-spin" />
-              Connecting…
+              {arxStatus ?? "Connecting…"}
             </>
           ) : (
-            isInWorldApp ? "Connect with World" : "Dev Connect"
+            isInWorldApp ? "Connect with World" : (
+              <>
+                <Nfc className="h-5 w-5" />
+                Connect with Wristband
+              </>
+            )
           )}
         </button>
+
+        {!authLoading && arxStatus && (
+          <p className="text-sm text-destructive">{arxStatus}</p>
+        )}
 
         <div className="flex items-center gap-2">
           <ThemeToggle />
