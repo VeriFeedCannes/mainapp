@@ -1,3 +1,5 @@
+import { GoogleGenAI } from "@google/genai";
+
 // ── Item-level tray analysis ──
 
 export type ItemCategory =
@@ -11,8 +13,6 @@ export type ItemCategory =
   | "beverage"
   | "other";
 
-export type ItemCourse = "main" | "side" | "dessert" | "drink";
-
 export type ConsumptionState =
   | "fully_eaten"
   | "mostly_eaten"
@@ -25,7 +25,6 @@ export type TrayCompleteness = "full_tray" | "partial" | "empty_tray";
 export interface TrayItem {
   name: string;
   category: ItemCategory;
-  course: ItemCourse;
   estimated_percent_left: number; // 0-100
   consumption_state: ConsumptionState;
   confidence: number; // 0.0-1.0
@@ -37,39 +36,6 @@ export interface TrayAnalysis {
   overall_confidence: number; // 0.0-1.0
   notes: string;
 }
-
-// ── VLM prompt (used by real providers) ──
-
-export const VLM_PROMPT = `You analyze a photo of a returned cafeteria tray.
-Identify each visible food item and assess how much was consumed.
-Return ONLY valid JSON, no markdown, no explanation.
-
-JSON schema:
-{
-  "items": [
-    {
-      "name": "string (descriptive, e.g. 'orange slices')",
-      "category": "protein | starch | vegetable | fruit | dairy | bread | dessert | beverage | other",
-      "course": "main | side | dessert | drink",
-      "estimated_percent_left": 0,
-      "consumption_state": "fully_eaten | mostly_eaten | half_left | mostly_left | untouched",
-      "confidence": 0.0
-    }
-  ],
-  "tray_completeness": "full_tray | partial | empty_tray",
-  "overall_confidence": 0.0,
-  "notes": "string"
-}
-
-Rules:
-- List ALL visible food items separately
-- estimated_percent_left: integer 0-100 (0 = fully eaten)
-- consumption_state must match estimated_percent_left logically
-- confidence: float 0.0-1.0 per item and overall
-- category and course: pick the closest match
-- tray_completeness: "full_tray" if multiple items visible, "partial" if few, "empty_tray" if tray is basically clean
-- If an item is ambiguous, use "other" for category and lower confidence
-- Output valid JSON only`;
 
 // ── Provider interface ──
 
@@ -89,7 +55,6 @@ const mockProvider: AnalyzerProvider = {
         {
           name: "pasta bolognese",
           category: "starch",
-          course: "main",
           estimated_percent_left: 10,
           consumption_state: "mostly_eaten",
           confidence: 0.92,
@@ -97,75 +62,215 @@ const mockProvider: AnalyzerProvider = {
         {
           name: "green salad",
           category: "vegetable",
-          course: "side",
           estimated_percent_left: 40,
           consumption_state: "half_left",
           confidence: 0.85,
         },
         {
-          name: "orange slices",
-          category: "fruit",
-          course: "side",
-          estimated_percent_left: 85,
-          consumption_state: "mostly_left",
-          confidence: 0.88,
-        },
-        {
-          name: "yogurt cup",
-          category: "dairy",
-          course: "dessert",
-          estimated_percent_left: 0,
-          consumption_state: "fully_eaten",
-          confidence: 0.95,
-        },
-        {
           name: "bread roll",
           category: "bread",
-          course: "side",
           estimated_percent_left: 60,
           consumption_state: "half_left",
           confidence: 0.82,
         },
       ],
       tray_completeness: "full_tray",
-      overall_confidence: 0.88,
-      notes: "Main dish well consumed. Orange slices mostly untouched — common pattern for citrus sides.",
+      overall_confidence: 0.86,
+      notes: "Mock analysis — main dish mostly eaten, salad and bread partially left.",
     };
   },
 };
 
-// ── Qwen VLM Provider ──
+// ── Gemini Provider (direct API call, no extra server) ──
 
-const VLM_SERVICE_URL = process.env.VLM_SERVICE_URL || "http://localhost:8100";
+const GEMINI_PROMPT = `You analyze a photo of a returned cafeteria tray or plate.
 
-const qwenProvider: AnalyzerProvider = {
-  name: "qwen-vlm",
+Your task is to identify only the meaningful leftover food items that are still visibly present in a significant way.
+
+Return STRICT valid JSON only.
+Do not use markdown.
+Do not add explanations.
+Do not add any text before or after the JSON.
+
+Use this exact schema:
+{
+  "items": [
+    {
+      "name": "string",
+      "category": "protein | starch | vegetable | fruit | dairy | bread | dessert | beverage | other",
+      "estimated_percent_left": 0,
+      "consumption_state": "fully_eaten | mostly_eaten | half_left | mostly_left | untouched",
+      "confidence": 0.0
+    }
+  ],
+  "tray_completeness": "full_tray | partial | empty_tray",
+  "overall_confidence": 0.0,
+  "notes": "string"
+}
+
+Rules:
+- Only include food or drink items that are meaningfully present.
+- Ignore tiny traces, crumbs, sauce residue, a few grains of rice, a few isolated pasta pieces, and any negligible leftovers.
+- If an item is present only as a trace, do not include it.
+- estimated_percent_left must be an integer between 0 and 100.
+- confidence and overall_confidence must be numbers between 0.0 and 1.0.
+- Use short, simple item names in English.
+- If category is unclear, use "other".
+- If the tray is almost empty and only trace residues remain, return an empty items array.
+- Be conservative and do not invent unseen items.`;
+
+function extractJson(raw: string): Record<string, unknown> {
+  let text = raw.trim();
+  if (text.startsWith("```")) {
+    text = text.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "").trim();
+  }
+  try { return JSON.parse(text); } catch { /* continue */ }
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}") + 1;
+  if (start !== -1 && end > start) {
+    return JSON.parse(text.slice(start, end));
+  }
+  throw new Error(`Could not parse JSON from model output: ${text.slice(0, 200)}`);
+}
+
+function parseVlmResult(parsed: Record<string, unknown>, provider: string): TrayAnalysis {
+  const items = Array.isArray(parsed.items) ? parsed.items : [];
+  const result: TrayAnalysis = {
+    items: items.map((item: Record<string, unknown>) => ({
+      name: String(item.name ?? "unknown"),
+      category: String(item.category ?? "other") as ItemCategory,
+      estimated_percent_left: Number(item.estimated_percent_left ?? 0),
+      consumption_state: String(item.consumption_state ?? "fully_eaten") as ConsumptionState,
+      confidence: Number(item.confidence ?? 0.5),
+    })),
+    tray_completeness: String(parsed.tray_completeness ?? "partial") as TrayCompleteness,
+    overall_confidence: Number(parsed.overall_confidence ?? 0),
+    notes: String(parsed.notes ?? ""),
+  };
+  console.log(
+    `[Analyzer/${provider}] Parsed: ${result.items.length} items, ` +
+    `completeness=${result.tray_completeness}, confidence=${result.overall_confidence}`,
+  );
+  for (const it of result.items) {
+    console.log(
+      `[Analyzer/${provider}]   → ${it.name} (${it.category}) ${it.estimated_percent_left}% left, ${it.consumption_state}, conf=${it.confidence}`,
+    );
+  }
+  return result;
+}
+
+const geminiProvider: AnalyzerProvider = {
+  name: "gemini",
   async analyze(imageBase64: string): Promise<TrayAnalysis> {
-    const res = await fetch(`${VLM_SERVICE_URL}/analyze`, {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error("GEMINI_API_KEY not set");
+
+    const model = process.env.GEMINI_MODEL || "gemini-3-pro-preview";
+    console.log(`[Analyzer/gemini] Calling model=${model}, image size=${imageBase64.length} chars`);
+    const t0 = Date.now();
+
+    const ai = new GoogleGenAI({ apiKey });
+
+    const response = await ai.models.generateContent({
+      model,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: imageBase64 } },
+            { text: GEMINI_PROMPT },
+          ],
+        },
+      ],
+    });
+
+    const raw = response.text?.trim() ?? "";
+    console.log(`[Analyzer/gemini] Response in ${Date.now() - t0}ms (${raw.length} chars): ${raw.slice(0, 300)}`);
+
+    const parsed = extractJson(raw);
+    return parseVlmResult(parsed, "gemini");
+  },
+};
+
+// ── LM Studio Provider (local OpenAI-compatible, optional) ──
+
+const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_BASE_URL || "http://127.0.0.1:1234";
+const LMSTUDIO_MODEL = process.env.LMSTUDIO_MODEL || "gemma-4-e4b-it";
+
+const lmstudioProvider: AnalyzerProvider = {
+  name: "lmstudio",
+  async analyze(imageBase64: string): Promise<TrayAnalysis> {
+    console.log(`[Analyzer/lmstudio] Calling ${LMSTUDIO_BASE_URL} model=${LMSTUDIO_MODEL}, image size=${imageBase64.length} chars`);
+    const t0 = Date.now();
+
+    const res = await fetch(`${LMSTUDIO_BASE_URL}/v1/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_base64: imageBase64 }),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer lm-studio",
+      },
+      body: JSON.stringify({
+        model: LMSTUDIO_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+              { type: "text", text: GEMINI_PROMPT },
+            ],
+          },
+        ],
+        max_tokens: 1024,
+        temperature: 0.1,
+      }),
     });
 
     if (!res.ok) {
-      throw new Error(`VLM service error: ${res.status} ${res.statusText}`);
+      const body = await res.text().catch(() => "");
+      throw new Error(`LM Studio error ${res.status}: ${body.slice(0, 200)}`);
     }
 
     const data = await res.json();
+    const raw: string = data.choices?.[0]?.message?.content?.trim() ?? "";
+    console.log(`[Analyzer/lmstudio] Response in ${Date.now() - t0}ms (${raw.length} chars): ${raw.slice(0, 300)}`);
 
-    return {
-      items: (data.items ?? []).map((item: Record<string, unknown>) => ({
-        name: item.name ?? "unknown",
-        category: item.category ?? "other",
-        course: item.course ?? "side",
-        estimated_percent_left: item.estimated_percent_left ?? 0,
-        consumption_state: item.consumption_state ?? "fully_eaten",
-        confidence: item.confidence ?? 0.5,
-      })),
-      tray_completeness: data.tray_completeness ?? "partial",
-      overall_confidence: data.overall_confidence ?? 0,
-      notes: data.notes ?? "",
-    };
+    const parsed = extractJson(raw);
+    return parseVlmResult(parsed, "lmstudio");
+  },
+};
+
+// ── VLM Service Provider (calls vlm-service Python, optional) ──
+
+const VLM_SERVICE_URL = process.env.VLM_SERVICE_URL || "http://localhost:8100";
+const VLM_TIMEOUT_MS = 30_000;
+
+const vlmProvider: AnalyzerProvider = {
+  name: "vlm",
+  async analyze(imageBase64: string): Promise<TrayAnalysis> {
+    console.log(`[Analyzer/vlm] Calling ${VLM_SERVICE_URL}/analyze, image size=${imageBase64.length} chars`);
+    const t0 = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), VLM_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(`${VLM_SERVICE_URL}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_base64: imageBase64 }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`VLM service error ${res.status}: ${body.slice(0, 200)}`);
+      }
+
+      const data = await res.json();
+      console.log(`[Analyzer/vlm] Response in ${Date.now() - t0}ms`);
+      return parseVlmResult(data as Record<string, unknown>, "vlm");
+    } finally {
+      clearTimeout(timeout);
+    }
   },
 };
 
@@ -173,14 +278,30 @@ const qwenProvider: AnalyzerProvider = {
 
 function getProvider(): AnalyzerProvider {
   const mode = process.env.ANALYZER_PROVIDER || "mock";
-  if (mode === "qwen") return qwenProvider;
+  if (mode === "gemini") return geminiProvider;
+  if (mode === "lmstudio") return lmstudioProvider;
+  if (mode === "vlm") return vlmProvider;
   return mockProvider;
 }
 
 export async function analyzeImage(imageBase64: string): Promise<TrayAnalysis> {
+  const mode = process.env.ANALYZER_PROVIDER || "mock";
   const provider = getProvider();
-  console.log(`[Analyzer] Using provider: ${provider.name}`);
-  return provider.analyze(imageBase64);
+  console.log(`[Analyzer] ANALYZER_PROVIDER=${mode} → using provider: ${provider.name}`);
+
+  try {
+    const result = await provider.analyze(imageBase64);
+    console.log(`[Analyzer] ${provider.name} succeeded`);
+    return result;
+  } catch (error) {
+    if (provider.name !== "mock") {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`[Analyzer] ${provider.name} FAILED: ${msg}`);
+      console.error(`[Analyzer] Falling back to mock`);
+      return mockProvider.analyze(imageBase64);
+    }
+    throw error;
+  }
 }
 
 // ── Scoring ──

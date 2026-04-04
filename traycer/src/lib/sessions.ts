@@ -27,9 +27,15 @@ export interface ReturnSignal {
   created_at: number;
 }
 
-const sessions = new Map<string, Session>();
-const plateAssociations = new Map<string, PlateAssociation>();
-const returnSignals = new Map<string, ReturnSignal>();
+// Survive Next.js hot-reload in dev mode
+const g = globalThis as unknown as {
+  __traycer_sessions?: Map<string, Session>;
+  __traycer_plates?: Map<string, PlateAssociation>;
+  __traycer_signals?: Map<string, ReturnSignal>;
+};
+const sessions = (g.__traycer_sessions ??= new Map<string, Session>());
+const plateAssociations = (g.__traycer_plates ??= new Map<string, PlateAssociation>());
+const returnSignals = (g.__traycer_signals ??= new Map<string, ReturnSignal>());
 
 const STATION_SECRET = process.env.STATION_SECRET || "dev-station-secret";
 const SESSION_TTL = 120_000; // 2 minutes
@@ -131,6 +137,8 @@ export function completeSession(
       wallet: session.wallet,
       associated_at: Date.now(),
     });
+    // Prevent stale return signal if the tag is still on the reader after pickup
+    returnSignals.delete(nfc_uid);
   }
 
   session.status = "completed";
@@ -204,6 +212,18 @@ export function setReturnSignalCapture(wallet: string): boolean {
 
 export function clearReturnSignal(nfc_uid: string): void {
   returnSignals.delete(nfc_uid);
+}
+
+export function clearAllForWallet(wallet: string): void {
+  for (const [id, s] of sessions) {
+    if (s.wallet === wallet) sessions.delete(id);
+  }
+  for (const [uid, assoc] of plateAssociations) {
+    if (assoc.wallet === wallet) plateAssociations.delete(uid);
+  }
+  for (const [uid, sig] of returnSignals) {
+    if (sig.wallet === wallet) returnSignals.delete(uid);
+  }
 }
 
 export function buildQrPayload(session: Session) {

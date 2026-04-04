@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
 
   if (wallet) {
     const signal = getReturnSignalByWallet(wallet);
-    return NextResponse.json({ signal: signal ? { status: signal.status, nfc_uid: signal.nfc_uid } : null });
+    return NextResponse.json({ signal: signal ? { status: signal.status, nfc_uid: signal.nfc_uid, created_at: signal.created_at } : null });
   }
 
   if (nfc_uid) {

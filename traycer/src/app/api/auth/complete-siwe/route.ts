@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import {
-  MiniAppWalletAuthSuccessPayload,
-  verifySiweMessage,
-} from "@worldcoin/minikit-js";
+import type { MiniAppWalletAuthSuccessPayload } from "@worldcoin/minikit-js/commands";
+import { verifySiweMessage } from "@worldcoin/minikit-js/siwe";
 
 interface RequestPayload {
   payload: MiniAppWalletAuthSuccessPayload;

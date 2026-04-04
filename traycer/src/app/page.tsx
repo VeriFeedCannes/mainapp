@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card, CardTitle } from "@/components/card";
 import { ScoreRing } from "@/components/score-ring";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -18,6 +18,8 @@ import {
   Users,
   Target,
   Undo2,
+  LogOut,
+  Timer,
 } from "lucide-react";
 import { MiniKit } from "@worldcoin/minikit-js";
 import Link from "next/link";
@@ -52,7 +54,7 @@ interface CommunityData {
 }
 
 export default function HomePage() {
-  const { isConnected, walletAddress, username, plate, setPlate, setAuth } = useAuth();
+  const { isConnected, walletAddress, username, plate, setPlate, setAuth, clearAuth } = useAuth();
   const { isReady: isInWorldApp } = useMiniKit();
   const [pickupOpen, setPickupOpen] = useState(false);
   const [returnModalOpen, setReturnModalOpen] = useState(false);
@@ -110,47 +112,69 @@ export default function HomePage() {
       const nonceRes = await fetch("/api/nonce");
       const { nonce } = await nonceRes.json();
 
-      const { finalPayload } = await MiniKit.commandsAsync.walletAuth({
+      const result = await MiniKit.walletAuth({
         nonce,
         expirationTime: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        statement: "Connect to Traycer — reduce waste, earn rewards",
+        statement: "Connect to VeriFeed — every meal counts",
       });
 
-      if (finalPayload.status === "error") {
+      if (result.executedWith === "fallback") {
         setAuthLoading(false);
         return;
       }
 
+      const { address, message, signature } = result.data;
+
       const verifyRes = await fetch("/api/auth/complete-siwe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload: finalPayload, nonce }),
+        body: JSON.stringify({
+          payload: { address, message, signature },
+          nonce,
+        }),
       });
       const verifyData = await verifyRes.json();
 
       if (verifyData.isValid) {
-        const addr = finalPayload.address;
-        let displayName = addr.slice(0, 6) + "..." + addr.slice(-4);
+        let displayName = address.slice(0, 6) + "..." + address.slice(-4);
         try {
-          const user = await MiniKit.getUserByAddress(addr);
+          const user = await MiniKit.getUserByAddress(address);
           if (user?.username) displayName = user.username;
         } catch { /* optional */ }
-        setAuth(addr, displayName);
+        setAuth(address, displayName);
       }
     } catch { /* silent */ }
 
     setAuthLoading(false);
   };
 
+  // Elapsed timer since pickup
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!plate) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [plate]);
+
+  const elapsed = useMemo(() => {
+    if (!plate) return "00:00";
+    const secs = Math.max(0, Math.floor((now - plate.associatedAt) / 1000));
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    if (h > 0) return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }, [plate, now]);
+
   // ===================== LANDING (not connected) =====================
   if (!isConnected) {
     return (
       <div className="flex min-h-[85vh] flex-col items-center justify-center gap-8 px-6">
         <div className="text-center">
-          <h1 className="text-4xl font-bold tracking-tight">Traycer</h1>
+          <h1 className="text-4xl font-bold tracking-tight">VeriFeed</h1>
           <p className="mt-3 text-base text-muted-foreground leading-relaxed">
-            Return your tray. Reduce waste.<br />
-            Earn rewards. Powered by World.
+            Every meal counts.<br />
+            Earn rewards. Make an impact.
           </p>
         </div>
 
@@ -198,7 +222,16 @@ export default function HomePage() {
           <p className="text-sm text-muted-foreground">Hey,</p>
           <h1 className="text-2xl font-bold">{username}</h1>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <button
+            onClick={clearAuth}
+            className="rounded-full bg-muted p-2 text-muted-foreground transition-colors hover:bg-border hover:text-foreground"
+            title="Disconnect"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* Plate status + CTA */}
@@ -214,7 +247,13 @@ export default function HomePage() {
               <span className="font-mono text-[10px] text-muted-foreground">{plate.nfcUid}</span>
             </div>
           </div>
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+              <Timer className="h-3 w-3" />
+              {elapsed}
+            </span>
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          </div>
         </button>
       ) : (
         <button

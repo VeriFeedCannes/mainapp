@@ -1,0 +1,11 @@
+{
+  "name": "traycer-badge-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@chainlink/cre-sdk": "^1.0.7",
+    "viem": "^2.0.0",
+    "zod": "^3.23.0"
+  }
+}

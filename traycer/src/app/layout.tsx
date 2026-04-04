@@ -9,9 +9,9 @@ import { BottomNav } from "@/components/bottom-nav";
 const geist = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
 
 export const metadata: Metadata = {
-  title: "Traycer",
+  title: "VeriFeed",
   description:
-    "Reduce food waste, earn rewards. A World Mini App for sustainable food disposal.",
+    "Every meal counts. Track, earn rewards, and make an impact. A World Mini App.",
 };
 
 export const viewport: Viewport = {
@@ -27,7 +27,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="fr" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning>
       <body className={`${geist.variable} antialiased`}>
         <ThemeProvider>
           <MiniKitProvider>

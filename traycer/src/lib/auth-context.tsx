@@ -27,7 +27,7 @@ interface AuthContextType extends AuthState {
   setPlate: (plate: PlateAssociation | null) => void;
 }
 
-const AUTH_STORAGE_KEY = "traycer_auth";
+const AUTH_STORAGE_KEY = "verifeed_auth";
 
 const AuthContext = createContext<AuthContextType | null>(null);
 

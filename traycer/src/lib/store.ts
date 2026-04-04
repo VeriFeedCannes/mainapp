@@ -1,4 +1,4 @@
-import type { TrayAnalysis, ConsumptionState } from "./analyzer";
+import type { TrayAnalysis, ConsumptionState } from "@/lib/analyzer";
 import fs from "fs";
 import path from "path";
 
@@ -15,7 +15,6 @@ export interface UserRecord {
   current_streak: number;
   best_streak: number;
   badges: string[];
-  iris_enrolled: boolean;
   world_id_nullifier: string | null;
   world_id_verified_at: number | null;
   world_id_level: "device" | "orb" | null;
@@ -51,11 +50,36 @@ export interface ClaimRecord {
   created_at: number;
 }
 
+export interface OnchainClaim {
+  id: string;
+  wallet: string;
+  badgeId: number;
+  claimType: string;
+  totalReturns: number;
+  totalScore: number;
+  minted: boolean;
+  txHash: string | null;
+  mintedAt: number | null;
+  source: string;
+  createdAt: number;
+}
+
+export interface RedemptionRecord {
+  id: string;
+  wallet: string;
+  badgeId: number;
+  rewardType: string;
+  txHash: string;
+  createdAt: number;
+}
+
 // ── In-memory state ──
 
 const users = new Map<string, UserRecord>();
 const deposits: DepositRecord[] = [];
 const claims: ClaimRecord[] = [];
+const onchainClaims: OnchainClaim[] = [];
+const redemptions: RedemptionRecord[] = [];
 let community: CommunityStats = {
   trays_today: 0,
   trays_total: 0,
@@ -69,6 +93,8 @@ interface StoreSnapshot {
   users: UserRecord[];
   deposits: Array<Omit<DepositRecord, "photo_base64">>;
   claims: ClaimRecord[];
+  onchainClaims: OnchainClaim[];
+  redemptions: RedemptionRecord[];
   community: CommunityStats;
 }
 
@@ -80,6 +106,8 @@ function persistToFile(): void {
       users: Array.from(users.values()),
       deposits: deposits.map(({ photo_base64: _, ...rest }) => rest),
       claims: [...claims],
+      onchainClaims: [...onchainClaims],
+      redemptions: [...redemptions],
       community,
     };
 
@@ -113,11 +141,21 @@ function loadFromFile(): void {
       for (const c of data.claims) claims.push(c);
     }
 
+    onchainClaims.length = 0;
+    if (data.onchainClaims) {
+      for (const oc of data.onchainClaims) onchainClaims.push(oc);
+    }
+
+    redemptions.length = 0;
+    if (data.redemptions) {
+      for (const r of data.redemptions) redemptions.push(r);
+    }
+
     if (data.community) {
       community = data.community;
     }
 
-    console.log(`[STORE] Loaded ${users.size} users, ${deposits.length} deposits from disk`);
+    console.log(`[STORE] Loaded ${users.size} users, ${deposits.length} deposits, ${onchainClaims.length} onchain claims from disk`);
   } catch (e) {
     console.error("[STORE] Load error:", e);
   }
@@ -157,6 +195,12 @@ export const BADGE_DEFS = [
   { id: "community-goal", icon: "🌍", title: "Community Goal", description: "Help reach today's collective goal", condition: () => false },
 ] as const;
 
+const ONCHAIN_BADGE_MAP = [
+  { threshold: 1, badgeId: 1, claimType: "first_return_badge", source: "first_return" },
+  { threshold: 3, badgeId: 2, claimType: "regular_badge", source: "regular" },
+  { threshold: 7, badgeId: 3, claimType: "committed_badge", source: "committed" },
+] as const;
+
 // ── User CRUD ──
 
 export function getOrCreateUser(wallet: string, username?: string): UserRecord {
@@ -170,7 +214,6 @@ export function getOrCreateUser(wallet: string, username?: string): UserRecord {
       current_streak: 0,
       best_streak: 0,
       badges: [],
-      iris_enrolled: false,
       world_id_nullifier: null,
       world_id_verified_at: null,
       world_id_level: null,
@@ -189,6 +232,41 @@ export function getOrCreateUser(wallet: string, username?: string): UserRecord {
 
 export function getUser(wallet: string): UserRecord | null {
   return users.get(wallet) ?? null;
+}
+
+/**
+ * DEV/TEST — full user reset: counters, badges, streaks, deposits, claims, redemptions.
+ * Does NOT touch on-chain data (use resetWallet on the contract for that).
+ */
+export function resetUserForDemo(wallet: string): void {
+  const w = wallet.toLowerCase();
+  const user = users.get(wallet) ?? users.get(w);
+  if (user) {
+    user.total_score = 0;
+    user.total_returns = 0;
+    user.current_streak = 0;
+    user.best_streak = 0;
+    user.badges = [];
+    user.last_return_day = null;
+  }
+
+  for (let i = deposits.length - 1; i >= 0; i--) {
+    if (deposits[i]!.wallet.toLowerCase() === w) deposits.splice(i, 1);
+  }
+
+  for (let i = onchainClaims.length - 1; i >= 0; i--) {
+    if (onchainClaims[i]!.wallet.toLowerCase() === w) onchainClaims.splice(i, 1);
+  }
+
+  for (let i = redemptions.length - 1; i >= 0; i--) {
+    if (redemptions[i]!.wallet.toLowerCase() === w) redemptions.splice(i, 1);
+  }
+
+  for (let i = claims.length - 1; i >= 0; i--) {
+    if (claims[i]!.wallet.toLowerCase() === w) claims.splice(i, 1);
+  }
+
+  persistToFile();
 }
 
 // ── Deposit ──
@@ -237,6 +315,30 @@ export function recordDeposit(
   for (const def of BADGE_DEFS) {
     if (!user.badges.includes(def.id) && def.condition(user)) {
       user.badges.push(def.id);
+    }
+  }
+
+  // Auto-create on-chain claims when thresholds are crossed
+  for (const def of ONCHAIN_BADGE_MAP) {
+    if (user.total_returns >= def.threshold) {
+      const exists = onchainClaims.some(
+        (c) => c.wallet.toLowerCase() === wallet.toLowerCase() && c.badgeId === def.badgeId,
+      );
+      if (!exists) {
+        onchainClaims.push({
+          id: generateOnchainClaimId(),
+          wallet,
+          badgeId: def.badgeId,
+          claimType: def.claimType,
+          totalReturns: user.total_returns,
+          totalScore: user.total_score,
+          minted: false,
+          txHash: null,
+          mintedAt: null,
+          source: def.source,
+          createdAt: Date.now(),
+        });
+      }
     }
   }
 
@@ -337,12 +439,195 @@ export function recordClaim(
   return claim;
 }
 
+// ── On-chain claims ──
+
+function generateOnchainClaimId(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let id = "oc_";
+  for (let i = 0; i < 8; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return id;
+}
+
+function ensureClaimsForAllUsers(): void {
+  let created = false;
+  for (const user of users.values()) {
+    for (const def of ONCHAIN_BADGE_MAP) {
+      if (user.total_returns >= def.threshold) {
+        const exists = onchainClaims.some(
+          (c) => c.wallet.toLowerCase() === user.wallet.toLowerCase() && c.badgeId === def.badgeId,
+        );
+        if (!exists) {
+          onchainClaims.push({
+            id: generateOnchainClaimId(),
+            wallet: user.wallet,
+            badgeId: def.badgeId,
+            claimType: def.claimType,
+            totalReturns: user.total_returns,
+            totalScore: user.total_score,
+            minted: false,
+            txHash: null,
+            mintedAt: null,
+            source: def.source,
+            createdAt: Date.now(),
+          });
+          created = true;
+        }
+      }
+    }
+  }
+  if (created) persistToFile();
+}
+
+export function getNextMintableClaim(): OnchainClaim | null {
+  const pending = onchainClaims.find((c) => !c.minted);
+  if (pending) return pending;
+  ensureClaimsForAllUsers();
+  return onchainClaims.find((c) => !c.minted) ?? null;
+}
+
+export function markClaimMinted(claimId: string, txHash: string): OnchainClaim | null {
+  const claim = onchainClaims.find((c) => c.id === claimId);
+  if (!claim) return null;
+  if (claim.minted && claim.txHash === txHash) return claim;
+  claim.minted = true;
+  claim.txHash = txHash;
+  claim.mintedAt = Date.now();
+  persistToFile();
+  return claim;
+}
+
+export function getMintedBadgesByWallet(wallet: string): OnchainClaim[] {
+  return onchainClaims
+    .filter((c) => c.wallet.toLowerCase() === wallet.toLowerCase() && c.minted)
+    .sort((a, b) => (b.mintedAt ?? 0) - (a.mintedAt ?? 0));
+}
+
+export function getPendingOnchainClaimsForWallet(wallet: string): OnchainClaim[] {
+  return onchainClaims
+    .filter(
+      (c) => c.wallet.toLowerCase() === wallet.toLowerCase() && !c.minted,
+    )
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export function hasPremiumClaimForWallet(wallet: string): boolean {
+  return onchainClaims.some(
+    (c) =>
+      c.wallet.toLowerCase() === wallet.toLowerCase() &&
+      c.badgeId === 4,
+  );
+}
+
+export function createPremiumClaim(
+  wallet: string,
+  nullifierHash: string,
+): OnchainClaim {
+  const user = getUser(wallet);
+  const claim: OnchainClaim = {
+    id: generateOnchainClaimId(),
+    wallet,
+    badgeId: 4,
+    claimType: "premium_claim",
+    totalReturns: user?.total_returns ?? 0,
+    totalScore: user?.total_score ?? 0,
+    minted: false,
+    txHash: null,
+    mintedAt: null,
+    source: `premium_claim:${nullifierHash.slice(0, 16)}`,
+    createdAt: Date.now(),
+  };
+  onchainClaims.push(claim);
+  persistToFile();
+  return claim;
+}
+
+/**
+ * DEV/TEST helper — reset minted claims so they can be re-consumed by CRE.
+ * If wallet is provided, only reset that wallet's claims.
+ * If wallet is omitted, reset ALL claims.
+ * Returns the number of claims reset.
+ */
+export function resetClaimsForWallet(wallet?: string): number {
+  let count = 0;
+  for (const c of onchainClaims) {
+    const match = !wallet || c.wallet.toLowerCase() === wallet.toLowerCase();
+    if (match && c.minted) {
+      c.minted = false;
+      c.txHash = null;
+      c.mintedAt = null;
+      count++;
+    }
+  }
+  if (count > 0) persistToFile();
+  return count;
+}
+
+// ── Redemptions (badge burn → coupon) ──
+
+function generateRedemptionId(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let id = "rdm_";
+  for (let i = 0; i < 8; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return id;
+}
+
+export function hasRedeemedBadge(wallet: string, badgeId: number): boolean {
+  return redemptions.some(
+    (r) => r.wallet.toLowerCase() === wallet.toLowerCase() && r.badgeId === badgeId,
+  );
+}
+
+export function getRedemptionsByWallet(wallet: string): RedemptionRecord[] {
+  return redemptions
+    .filter((r) => r.wallet.toLowerCase() === wallet.toLowerCase())
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function recordRedemption(
+  wallet: string,
+  badgeId: number,
+  rewardType: string,
+  txHash: string,
+): RedemptionRecord {
+  const record: RedemptionRecord = {
+    id: generateRedemptionId(),
+    wallet,
+    badgeId,
+    rewardType,
+    txHash,
+    createdAt: Date.now(),
+  };
+  redemptions.push(record);
+  persistToFile();
+  return record;
+}
+
+/**
+ * DEV/TEST — remove redemption records (Coffee coupon UI state).
+ * If wallet is set, only that wallet; otherwise all redemptions.
+ */
+export function resetRedemptionsForWallet(wallet?: string): number {
+  const before = redemptions.length;
+  if (wallet) {
+    const w = wallet.toLowerCase();
+    for (let i = redemptions.length - 1; i >= 0; i--) {
+      if (redemptions[i]!.wallet.toLowerCase() === w) {
+        redemptions.splice(i, 1);
+      }
+    }
+  } else {
+    redemptions.length = 0;
+  }
+  const removed = before - redemptions.length;
+  if (removed > 0) persistToFile();
+  return removed;
+}
+
 // ── Item-level analytics ──
 
 export interface ItemAggregate {
   name: string;
   category: string;
-  course: string;
   total_seen: number;
   avg_percent_left: number;
   state_distribution: Record<ConsumptionState, number>;
@@ -360,7 +645,6 @@ export interface DailyStats {
 function aggregateItems(filteredDeposits: DepositRecord[]): ItemAggregate[] {
   const agg = new Map<string, {
     category: string;
-    course: string;
     total_seen: number;
     sum_percent_left: number;
     states: Record<string, number>;
@@ -374,7 +658,6 @@ function aggregateItems(filteredDeposits: DepositRecord[]): ItemAggregate[] {
       if (!entry) {
         entry = {
           category: item.category,
-          course: item.course,
           total_seen: 0,
           sum_percent_left: 0,
           states: {},
@@ -390,7 +673,6 @@ function aggregateItems(filteredDeposits: DepositRecord[]): ItemAggregate[] {
   return Array.from(agg.entries()).map(([name, data]) => ({
     name,
     category: data.category,
-    course: data.course,
     total_seen: data.total_seen,
     avg_percent_left: Math.round(data.sum_percent_left / data.total_seen),
     state_distribution: data.states as Record<ConsumptionState, number>,

@@ -1,0 +1,8 @@
+{
+  "schedule": "*/60 * * * * *",
+  "apiBaseUrl": "https://laggardly-corolitic-towanda.ngrok-free.dev",
+  "consumerAddress": "0x2BeE4bD96a4F7eA712B079c0A5C5440F05B50B4B",
+  "chainName": "ethereum-mainnet-worldchain-1",
+  "gasLimit": "500000",
+  "creWebhookSecret": ""
+}

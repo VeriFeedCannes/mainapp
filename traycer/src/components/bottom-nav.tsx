@@ -3,12 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { Home, Trophy, Eye, User } from "lucide-react";
+import { Home, Trophy, User } from "lucide-react";
 
 const navItems = [
   { href: "/", icon: Home, label: "Home" },
   { href: "/rewards", icon: Trophy, label: "Rewards" },
-  { href: "/iris", icon: Eye, label: "Iris" },
   { href: "/deposit", icon: User, label: "Profile" },
 ];
 

@@ -2,7 +2,22 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { X, Loader2, CheckCircle2, Nfc, Camera, PartyPopper } from "lucide-react";
+import { X, Loader2, CheckCircle2, Nfc, Camera, PartyPopper, Link2, ScanSearch } from "lucide-react";
+
+type OnchainUiStatus =
+  | null
+  | "scanning"
+  | "no_queue"
+  | "waiting_cre"
+  | { kind: "minted"; badgeId: number; txHash: string }
+  | "timeout";
+
+const BADGE_LABEL: Record<number, string> = {
+  1: "First Return",
+  2: "Regular",
+  3: "Committed",
+  4: "Premium",
+};
 
 type ReturnStep = "waiting" | "detected" | "capturing" | "done";
 
@@ -79,8 +94,12 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
   const [deposit, setDeposit] = useState<DepositResult | null>(null);
   const [confettiBurstId, setConfettiBurstId] = useState(0);
   const [doneLoading, setDoneLoading] = useState(false);
+  const [capturePhase, setCapturePhase] = useState<"signal" | "photo" | "analyzing">("signal");
+  const [onchainStatus, setOnchainStatus] = useState<OnchainUiStatus>(null);
   const stepRef = useRef<ReturnStep>("waiting");
   const mountedRef = useRef(true);
+  const pendingClaimIdsRef = useRef<string[]>([]);
+  const openedAtRef = useRef(0);
 
   const updateStep = useCallback((s: ReturnStep) => {
     stepRef.current = s;
@@ -96,13 +115,18 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Reset on close
+  // Reset on close / record open time
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      openedAtRef.current = Date.now();
+    } else {
       updateStep("waiting");
       setDeposit(null);
       setConfettiBurstId(0);
       setDoneLoading(false);
+      setCapturePhase("signal");
+      setOnchainStatus(null);
+      pendingClaimIdsRef.current = [];
     }
   }, [open, updateStep]);
 
@@ -121,9 +145,14 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
         const data = await res.json();
         if (cancelled || stepRef.current !== "waiting") return;
         if (data.signal?.status === "waiting" || data.signal?.status === "capture") {
-          updateStep("detected");
-          triggerConfetti();
-          return;
+          const signalCreatedAt = data.signal.created_at ?? 0;
+          if (signalCreatedAt < openedAtRef.current) {
+            // Stale signal from before modal opened — ignore
+          } else {
+            updateStep("detected");
+            triggerConfetti();
+            return;
+          }
         }
       } catch { /* retry */ }
       if (!cancelled && stepRef.current === "waiting") {
@@ -138,6 +167,7 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
   const handleDone = useCallback(async () => {
     if (!walletAddress || stepRef.current !== "detected") return;
     updateStep("capturing");
+    setCapturePhase("signal");
     setDoneLoading(true);
 
     try {
@@ -147,6 +177,14 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
         body: JSON.stringify({ wallet: walletAddress, action: "capture" }),
       });
     } catch { /* continue */ }
+
+    setCapturePhase("photo");
+
+    setTimeout(() => {
+      if (mountedRef.current && stepRef.current === "capturing") {
+        setCapturePhase("analyzing");
+      }
+    }, 3000);
 
     let attempts = 0;
 
@@ -181,12 +219,94 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
         }
       } catch { /* retry */ }
 
+      if (attempts >= 2 && mountedRef.current && stepRef.current === "capturing") {
+        setCapturePhase("analyzing");
+      }
+
       attempts++;
       setTimeout(pollResult, 2000);
     };
 
     pollResult();
   }, [walletAddress, updateStep, triggerConfetti, setPlate]);
+
+  // Poll on-chain badge status after return is confirmed
+  useEffect(() => {
+    if (step !== "done" || !walletAddress) return;
+
+    setOnchainStatus("scanning");
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const r = await fetch(
+          `/api/chainlink/pending?wallet=${encodeURIComponent(walletAddress)}`,
+        );
+        const d = await r.json();
+        if (cancelled) return;
+        const ids = (d.claims ?? []).map((c: { id: string }) => c.id);
+        if (!ids.length) {
+          setOnchainStatus("no_queue");
+          return;
+        }
+        pendingClaimIdsRef.current = ids;
+        setOnchainStatus("waiting_cre");
+      } catch {
+        if (!cancelled) setOnchainStatus("no_queue");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [step, walletAddress]);
+
+  useEffect(() => {
+    if (onchainStatus !== "waiting_cre" || !walletAddress) return;
+
+    const ids = pendingClaimIdsRef.current;
+    let cancelled = false;
+    let attempts = 0;
+
+    const tick = async () => {
+      if (cancelled) return;
+      attempts++;
+      try {
+        const r = await fetch(
+          `/api/badges/onchain?wallet=${encodeURIComponent(walletAddress)}`,
+        );
+        const d = await r.json();
+        const badges: { id: string; badgeId: number; txHash: string | null }[] = d.badges ?? [];
+        const fresh = badges.find(
+          (b) => b.txHash && ids.includes(b.id),
+        );
+        if (fresh) {
+          setOnchainStatus({
+            kind: "minted",
+            badgeId: fresh.badgeId,
+            txHash: fresh.txHash!,
+          });
+          cancelled = true;
+          return;
+        }
+      } catch {
+        /* continue */
+      }
+      if (cancelled) return;
+      if (attempts >= 60) {
+        setOnchainStatus("timeout");
+        cancelled = true;
+      }
+    };
+
+    const intervalId = setInterval(tick, 3000);
+    void tick();
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [onchainStatus, walletAddress]);
 
   if (!open) return null;
 
@@ -264,17 +384,25 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
           </div>
         )}
 
-        {/* STEP 3: Capturing photo */}
+        {/* STEP 3: Capturing photo + VLM analysis */}
         {step === "capturing" && (
           <div className="flex flex-col items-center gap-4 py-8">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/20">
-              <Camera className="h-7 w-7 text-primary animate-pulse" />
+              {capturePhase === "analyzing" ? (
+                <ScanSearch className="h-7 w-7 text-primary animate-pulse" />
+              ) : (
+                <Camera className="h-7 w-7 text-primary animate-pulse" />
+              )}
             </div>
-            <h2 className="text-xl font-bold">Taking photo…</h2>
-            <p className="text-center text-sm text-muted-foreground">
-              The station is capturing and analyzing your tray.
-            </p>
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <h2 className="text-xl font-bold">
+              {capturePhase === "signal" && "Sending capture signal…"}
+              {capturePhase === "photo" && "Taking photo…"}
+              {capturePhase === "analyzing" && "Analyzing your tray…"}
+            </h2>
+            <div className="flex flex-col items-center gap-2 w-full">
+              <CaptureStep label="Photo captured" done={capturePhase === "analyzing"} active={capturePhase === "photo" || capturePhase === "signal"} />
+              <CaptureStep label="AI analysis" done={false} active={capturePhase === "analyzing"} />
+            </div>
           </div>
         )}
 
@@ -293,6 +421,56 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
                 Photo saved — view it in your return history
               </p>
             )}
+
+            {onchainStatus === "scanning" && (
+              <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Checking on-chain badge…
+              </div>
+            )}
+            {onchainStatus === "no_queue" && (
+              <p className="text-center text-xs text-muted-foreground">
+                No new NFT milestone for this return.
+              </p>
+            )}
+            {onchainStatus === "waiting_cre" && (
+              <div className="w-full rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-center">
+                <p className="text-sm font-medium text-foreground">
+                  Badge NFT queued
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Mint on World Chain is triggered by{" "}
+                  <span className="font-medium text-foreground">Chainlink CRE</span>.
+                </p>
+                <div className="mt-2 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Waiting for transaction…
+                </div>
+              </div>
+            )}
+            {typeof onchainStatus === "object" && onchainStatus?.kind === "minted" && (
+              <div className="w-full rounded-xl border border-green-500/30 bg-green-500/10 px-4 py-3 text-center">
+                <p className="text-sm font-semibold text-green-700 dark:text-green-400">
+                  NFT minted: {BADGE_LABEL[onchainStatus.badgeId] ?? `Badge #${onchainStatus.badgeId}`}
+                </p>
+                <a
+                  href={`https://worldscan.org/tx/${onchainStatus.txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  View on Worldscan
+                </a>
+              </div>
+            )}
+            {onchainStatus === "timeout" && (
+              <p className="text-center text-xs text-muted-foreground">
+                No on-chain confirmation yet. Check{" "}
+                <span className="font-medium">Rewards</span> later.
+              </p>
+            )}
+
             <button
               onClick={onClose}
               className="mt-2 rounded-full bg-primary px-8 py-2.5 font-semibold text-primary-foreground"
@@ -302,6 +480,21 @@ export function ReturnModal({ open, onClose }: ReturnModalProps) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function CaptureStep({ label, done, active }: { label: string; done: boolean; active: boolean }) {
+  return (
+    <div className={`flex items-center gap-2.5 text-sm transition-colors ${done ? "text-green-500" : active ? "text-foreground" : "text-muted-foreground/50"}`}>
+      {done ? (
+        <CheckCircle2 className="h-4 w-4 text-green-500" />
+      ) : active ? (
+        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+      ) : (
+        <div className="h-4 w-4 rounded-full border-2 border-muted" />
+      )}
+      {label}
     </div>
   );
 }

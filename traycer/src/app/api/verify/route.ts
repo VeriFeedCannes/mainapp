@@ -1,12 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  verifyCloudProof,
-  IVerifyResponse,
-  ISuccessResult,
-} from "@worldcoin/minikit-js";
+import { verifyWorldId, type WorldIdProof } from "@/lib/world-id";
 
 interface RequestPayload {
-  payload: ISuccessResult;
+  payload: WorldIdProof;
   action: string;
   signal?: string;
 }
@@ -14,7 +10,7 @@ interface RequestPayload {
 export async function POST(req: NextRequest) {
   try {
     const { payload, action, signal } = (await req.json()) as RequestPayload;
-    const app_id = process.env.APP_ID as `app_${string}`;
+    const app_id = process.env.APP_ID;
 
     if (!app_id) {
       return NextResponse.json(
@@ -23,15 +19,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const verifyRes = (await verifyCloudProof(
-      payload,
-      app_id,
-      action,
-      signal,
-    )) as IVerifyResponse;
+    const verifyRes = await verifyWorldId(payload, app_id, action, signal);
 
     if (verifyRes.success) {
-      // TODO: Mark user as verified in Supabase
       return NextResponse.json({ verifyRes, status: 200 });
     } else {
       return NextResponse.json({ verifyRes, status: 400 });

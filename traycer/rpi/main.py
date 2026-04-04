@@ -49,7 +49,7 @@ for i, arg in enumerate(sys.argv):
 # Cooldown: don't re-check the same unassociated tag
 _last_ignored_uid = None
 _last_ignored_time = 0
-IGNORED_COOLDOWN = 30  # 30s for tags that aren't associated
+IGNORED_COOLDOWN = 4  # seconds before re-checking same tag
 
 
 def banner():
@@ -120,12 +120,12 @@ def handle_pickup_flow(qr_data):
     result = complete_session(session_id, uid)
     if result:
         print(f"[FLOW] ✅ Tray {uid} linked to {wallet}")
-        clear_ignored()
     else:
         print(f"[FLOW] ❌ Failed to complete session")
 
     print("[FLOW] Remove the tray from the reader...")
     wait_for_removal()
+    mark_ignored(uid)
     resume_camera()
     print(f"{'─' * 40}\n")
 

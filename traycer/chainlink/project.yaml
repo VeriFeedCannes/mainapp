@@ -1,0 +1,11 @@
+# Traycer CRE — World Chain mainnet
+
+staging-settings:
+  rpcs:
+    - chain-name: ethereum-mainnet-worldchain-1
+      url: https://worldchain-mainnet.g.alchemy.com/public
+
+production-settings:
+  rpcs:
+    - chain-name: ethereum-mainnet-worldchain-1
+      url: ${WORLDCHAIN_RPC_URL}

@@ -1,15 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  verifyCloudProof,
-  IVerifyResponse,
-  ISuccessResult,
-} from "@worldcoin/minikit-js";
-import {
   getUser,
   recordClaim,
   hasNullifierClaimed,
   getClaimsByWallet,
 } from "@/lib/store";
+import { verifyWorldId, type WorldIdProof } from "@/lib/world-id";
 
 export interface RewardTier {
   id: string;
@@ -27,7 +23,7 @@ export const REWARD_TIERS: RewardTier[] = [
 interface ClaimRequest {
   wallet: string;
   reward_type: string;
-  proof: ISuccessResult;
+  proof: WorldIdProof;
 }
 
 export async function GET(req: NextRequest) {
@@ -76,18 +72,11 @@ export async function POST(req: NextRequest) {
     let verification_level: "device" | "orb";
 
     if (isDev) {
-      // Dev mode: simulate verification
       console.log("[CLAIM] Dev mode — simulating World ID verification");
       nullifier_hash = `dev_${wallet}_${Date.now()}`;
       verification_level = tier.verification_level;
     } else {
-      const action = `claim-${reward_type}`;
-      const verifyRes = (await verifyCloudProof(
-        proof,
-        app_id,
-        action,
-        wallet,
-      )) as IVerifyResponse;
+      const verifyRes = await verifyWorldId(proof, app_id, "claim-reward", wallet);
 
       if (!verifyRes.success) {
         console.log("[CLAIM] World ID verification failed:", verifyRes);

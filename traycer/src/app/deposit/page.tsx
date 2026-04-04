@@ -24,7 +24,6 @@ interface DepositData {
     items: Array<{
       name: string;
       category: string;
-      course: string;
       estimated_percent_left: number;
       consumption_state: string;
       confidence: number;
@@ -178,7 +177,7 @@ function DepositContent() {
                 <div className="flex flex-col">
                   <span className="text-sm font-medium capitalize">{item.name}</span>
                   <span className="text-[10px] text-muted-foreground">
-                    {item.category} · {item.course}
+                    {item.category}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">

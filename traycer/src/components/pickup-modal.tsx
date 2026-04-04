@@ -24,10 +24,13 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
   }, []);
 
   useEffect(() => {
-    if (open && step === "loading") {
+    if (open) {
+      pollingRef.current = false;
+      setQrPayload(null);
+      setStep("loading");
+      setError(null);
       createSession();
-    }
-    if (!open) {
+    } else {
       pollingRef.current = false;
       setQrPayload(null);
       setStep("loading");
@@ -89,6 +92,12 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
 
         if (data.session?.status === "scanned") {
           setStep("qr-confirmed");
+        }
+
+        if (!data.session && !data.plate && step === "show-qr") {
+          pollingRef.current = false;
+          createSession();
+          return;
         }
       } catch { /* retry */ }
 

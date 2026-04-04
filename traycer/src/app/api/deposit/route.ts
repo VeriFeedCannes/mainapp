@@ -5,7 +5,8 @@ import {
   verifyStationSecret,
 } from "@/lib/sessions";
 import { analyzeImage, computeScore } from "@/lib/analyzer";
-import { recordDeposit, getOrCreateUser } from "@/lib/store";
+import { recordDeposit, getOrCreateUser, getNextMintableClaim } from "@/lib/store";
+import { triggerCreSimulation } from "@/lib/cre-trigger";
 
 export async function POST(req: NextRequest) {
   try {
@@ -67,6 +68,13 @@ export async function POST(req: NextRequest) {
     );
 
     console.log("[SERVER /api/deposit] Deposit recorded:", deposit.id, "score:", score);
+
+    // If a new on-chain claim exists, trigger CRE simulate in the background
+    const pendingClaim = getNextMintableClaim();
+    if (pendingClaim) {
+      console.log("[SERVER /api/deposit] Pending claim found, triggering CRE…");
+      triggerCreSimulation();
+    }
 
     return NextResponse.json({
       action: "return",
