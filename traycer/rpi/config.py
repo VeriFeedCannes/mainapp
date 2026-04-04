@@ -7,7 +7,7 @@ QR_MODE options:
   "camera"  → live camera feed with pyzbar (requires picamera2)
 """
 
-BACKEND_URL = "http://192.168.1.100:3000"   # PC IP running Next.js dev server
+BACKEND_URL = "https://laggardly-corolitic-towanda.ngrok-free.dev"  # ngrok tunnel to PC
 STATION_ID = "cannes-1"
 STATION_SECRET = "dev-station-secret"
 

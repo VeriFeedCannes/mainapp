@@ -3,7 +3,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { QrDisplay } from "@/components/qr-display";
 import { useAuth } from "@/lib/auth-context";
-import { X, Loader2, CheckCircle2, AlertCircle, Nfc } from "lucide-react";
+import { X, Loader2, CheckCircle2, AlertCircle, Nfc, ScanLine } from "lucide-react";
+
+type ModalStep = "loading" | "show-qr" | "qr-confirmed" | "done";
 
 interface PickupModalProps {
   open: boolean;
@@ -13,10 +15,8 @@ interface PickupModalProps {
 export function PickupModal({ open, onClose }: PickupModalProps) {
   const { walletAddress, setPlate } = useAuth();
   const [qrPayload, setQrPayload] = useState<Record<string, unknown> | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<ModalStep>("loading");
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-  const [polling, setPolling] = useState(false);
   const pollingRef = useRef(false);
 
   useEffect(() => {
@@ -24,22 +24,21 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
   }, []);
 
   useEffect(() => {
-    if (open && !qrPayload && !done) {
+    if (open && step === "loading") {
       createSession();
     }
     if (!open) {
       pollingRef.current = false;
       setQrPayload(null);
-      setDone(false);
+      setStep("loading");
       setError(null);
-      setPolling(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const createSession = async () => {
     if (!walletAddress) return;
-    setLoading(true);
+    setStep("loading");
     setError(null);
 
     try {
@@ -51,28 +50,24 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
       const data = await res.json();
       if (data.error) {
         setError(data.error);
-        setLoading(false);
         return;
       }
       setQrPayload(data.qr_payload);
-      setLoading(false);
-      setPolling(true);
-      pollForCompletion();
+      setStep("show-qr");
+      startPolling();
     } catch {
       setError("Network error");
-      setLoading(false);
     }
   };
 
-  const pollForCompletion = useCallback(() => {
+  const startPolling = useCallback(() => {
     if (!walletAddress) return;
     pollingRef.current = true;
     let attempts = 0;
 
     const poll = async () => {
-      if (!pollingRef.current || attempts >= 60) {
-        setPolling(false);
-        if (attempts >= 60) setError("Session expired. Try again.");
+      if (!pollingRef.current || attempts >= 90) {
+        if (attempts >= 90) setError("Session expired. Try again.");
         return;
       }
 
@@ -88,14 +83,17 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
             associatedAt: data.plate.associated_at,
           });
           pollingRef.current = false;
-          setPolling(false);
-          setDone(true);
+          setStep("done");
           return;
+        }
+
+        if (data.session?.status === "scanned") {
+          setStep("qr-confirmed");
         }
       } catch { /* retry */ }
 
       attempts++;
-      setTimeout(poll, 2000);
+      setTimeout(poll, 1500);
     };
 
     poll();
@@ -114,7 +112,84 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
           <X className="h-4 w-4" />
         </button>
 
-        {done ? (
+        {/* Step indicator */}
+        {step !== "loading" && (
+          <div className="mb-5 flex items-center gap-2 px-2">
+            <StepDot active={step === "show-qr"} done={step === "qr-confirmed" || step === "done"} label="1" />
+            <div className={`h-0.5 flex-1 rounded-full transition-colors ${step === "qr-confirmed" || step === "done" ? "bg-primary" : "bg-muted"}`} />
+            <StepDot active={step === "qr-confirmed"} done={step === "done"} label="2" />
+            <div className={`h-0.5 flex-1 rounded-full transition-colors ${step === "done" ? "bg-primary" : "bg-muted"}`} />
+            <StepDot active={false} done={step === "done"} label="3" />
+          </div>
+        )}
+
+        {/* LOADING */}
+        {step === "loading" && !error && (
+          <div className="flex flex-col items-center gap-4 py-8">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm text-muted-foreground">Creating session…</p>
+          </div>
+        )}
+
+        {/* ERROR */}
+        {error && (
+          <div className="flex flex-col items-center gap-4 py-6">
+            <div className="flex w-full items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              {error}
+            </div>
+            <button
+              onClick={createSession}
+              className="rounded-full bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* STEP 1: Show QR */}
+        {step === "show-qr" && qrPayload && (
+          <div className="flex flex-col items-center gap-4">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/20">
+              <ScanLine className="h-6 w-6 text-primary" />
+            </div>
+            <h2 className="text-xl font-bold">Show QR to station</h2>
+            <p className="text-center text-sm text-muted-foreground">
+              Hold your phone in front of the station camera.
+            </p>
+            <QrDisplay payload={qrPayload} />
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              Waiting for station to scan…
+            </div>
+          </div>
+        )}
+
+        {/* STEP 2: QR Confirmed — Place tray */}
+        {step === "qr-confirmed" && (
+          <div className="flex flex-col items-center gap-4 py-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-green-500/20">
+              <CheckCircle2 className="h-7 w-7 text-green-500" />
+            </div>
+            <h2 className="text-xl font-bold">QR confirmed!</h2>
+            <div className="mt-2 flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-primary/40 px-6 py-6">
+              <Nfc className="h-10 w-10 text-primary animate-pulse" />
+              <p className="text-center font-medium">
+                Place your tray on the NFC reader
+              </p>
+              <p className="text-center text-xs text-muted-foreground">
+                The station is waiting for your tray…
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              Waiting for NFC…
+            </div>
+          </div>
+        )}
+
+        {/* STEP 3: Done */}
+        {step === "done" && (
           <div className="flex flex-col items-center gap-4 py-6">
             <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-500/20">
               <CheckCircle2 className="h-8 w-8 text-green-500" />
@@ -130,44 +205,24 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
               Got it
             </button>
           </div>
-        ) : (
-          <div className="flex flex-col items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/20">
-              <Nfc className="h-6 w-6 text-primary" />
-            </div>
-            <h2 className="text-xl font-bold">Grab a tray</h2>
-
-            {error && (
-              <div className="flex w-full items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                {error}
-              </div>
-            )}
-
-            {loading && (
-              <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                Creating session…
-              </div>
-            )}
-
-            {qrPayload && (
-              <>
-                <p className="text-center text-sm text-muted-foreground">
-                  Show this QR to the station, then place your tray on the NFC reader.
-                </p>
-                <QrDisplay payload={qrPayload} />
-                {polling && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                    Waiting for NFC scan…
-                  </div>
-                )}
-              </>
-            )}
-          </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function StepDot({ active, done, label }: { active: boolean; done: boolean; label: string }) {
+  return (
+    <div
+      className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold transition-colors ${
+        done
+          ? "bg-green-500 text-white"
+          : active
+            ? "bg-primary text-primary-foreground"
+            : "bg-muted text-muted-foreground"
+      }`}
+    >
+      {done ? "✓" : label}
     </div>
   );
 }

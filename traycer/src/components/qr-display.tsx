@@ -16,7 +16,7 @@ export function QrDisplay({ payload, size = 200 }: QrDisplayProps) {
         <QRCodeSVG value={data} size={size} level="M" />
       </div>
       <p className="text-xs text-muted-foreground">
-        Montre ce QR à la borne
+        Hold in front of station camera
       </p>
     </div>
   );
