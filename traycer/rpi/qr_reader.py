@@ -125,15 +125,43 @@ def _switch_to_still():
     time.sleep(0.5)
 
 
+_debug_frame_count = 0
+_debug_save_interval = 200  # save a debug frame every N frames
+_debug_dir = "qr_debug"
+
+
 def _try_decode_qr(frame):
     """Try to find a valid Traycer QR in a numpy frame."""
+    global _debug_frame_count
+    _debug_frame_count += 1
+
     img = Image.fromarray(frame)
     decoded = pyzbar_decode(img)
+
+    # Save a debug frame periodically
+    if _debug_frame_count % _debug_save_interval == 0:
+        import os
+        os.makedirs(_debug_dir, exist_ok=True)
+        debug_path = f"{_debug_dir}/frame_{_debug_frame_count}.jpg"
+        img.save(debug_path)
+        print(f"[QR-DEBUG] Saved frame #{_debug_frame_count} → {debug_path}")
+        if decoded:
+            for obj in decoded:
+                print(f"[QR-DEBUG] Detected: type={obj.type} data={obj.data[:80]}")
+        else:
+            print(f"[QR-DEBUG] No codes detected in frame")
+
     for obj in decoded:
         if obj.type == "QRCODE":
             try:
-                data = json.loads(obj.data.decode("utf-8"))
+                raw = obj.data.decode("utf-8")
+                data = json.loads(raw)
                 if "s" in data:
+                    # Save the successful frame
+                    import os
+                    os.makedirs(_debug_dir, exist_ok=True)
+                    img.save(f"{_debug_dir}/qr_success.jpg")
+                    print(f"[QR] ✅ Decoded: {raw[:100]}")
                     return data
             except (json.JSONDecodeError, UnicodeDecodeError):
                 continue

@@ -2,18 +2,17 @@
 Traycer Station — Main Loop
 
 State machine:
-  IDLE → scan QR (manual/file/camera continuous)
-       → also poll NFC for spontaneous tray returns
+  IDLE → scan QR (camera/manual/file) + poll NFC
 
-  QR found → validate session → wait NFC (binding mode) → complete → IDLE
-  NFC without QR → check if associated → if yes: return flow → IDLE
-                                        → if no: ignore silently
+  QR found → validate → wait NFC → complete → IDLE
+  NFC in idle → check if associated (no photo) →
+    if return: take photo, send for analysis
+    if not associated: silent ignore
 
 Usage:
   python main.py              # uses QR_MODE from config.py
-  python main.py --qr manual  # override: paste QR in terminal
-  python main.py --qr file    # override: read QR from image file
-  python main.py --qr camera  # override: live camera feed
+  python main.py --qr manual  # paste QR in terminal
+  python main.py --qr camera  # live camera feed
 """
 
 import sys
@@ -32,17 +31,17 @@ from backend_client import validate_session, complete_session, deposit_return
 
 
 # ──────────────────────────────────────────
-# Parse CLI args
+# CLI args
 # ──────────────────────────────────────────
 qr_mode = QR_MODE
 for i, arg in enumerate(sys.argv):
     if arg == "--qr" and i + 1 < len(sys.argv):
         qr_mode = sys.argv[i + 1]
 
-# Cooldown: avoid re-checking the same NFC tag repeatedly
-_last_seen_uid = None
-_last_seen_time = 0
-NFC_COOLDOWN = 5  # seconds
+# Cooldown: don't re-check the same unassociated tag
+_last_ignored_uid = None
+_last_ignored_time = 0
+IGNORED_COOLDOWN = 30  # 30s for tags that aren't associated
 
 
 def banner():
@@ -56,15 +55,25 @@ def banner():
     print()
 
 
-def is_on_cooldown(uid):
-    """Check if we recently saw this UID (avoid spamming the API)."""
-    global _last_seen_uid, _last_seen_time
+def is_ignored_cooldown(uid):
+    """Check if this UID was recently checked and found unassociated."""
+    global _last_ignored_uid, _last_ignored_time
     now = time.time()
-    if uid == _last_seen_uid and (now - _last_seen_time) < NFC_COOLDOWN:
+    if uid == _last_ignored_uid and (now - _last_ignored_time) < IGNORED_COOLDOWN:
         return True
-    _last_seen_uid = uid
-    _last_seen_time = now
     return False
+
+
+def mark_ignored(uid):
+    global _last_ignored_uid, _last_ignored_time
+    _last_ignored_uid = uid
+    _last_ignored_time = time.time()
+
+
+def clear_ignored():
+    global _last_ignored_uid, _last_ignored_time
+    _last_ignored_uid = None
+    _last_ignored_time = 0
 
 
 # ──────────────────────────────────────────
@@ -72,17 +81,13 @@ def is_on_cooldown(uid):
 # ──────────────────────────────────────────
 
 def handle_pickup_flow(qr_data):
-    """
-    QR scanned → validate → NFC binding mode → complete.
-    In this mode, ANY tag placed on the reader gets bound.
-    """
+    """QR scanned → validate → wait NFC (binding) → complete."""
     session_id = qr_data["s"]
     action = qr_data.get("a", "pickup")
 
     print(f"\n{'─' * 40}")
     print(f"[FLOW] QR scanned — session: {session_id} / action: {action}")
 
-    # Step 1: Validate session
     session_data = validate_session(session_id)
     if not session_data:
         print("[FLOW] Session invalid or expired. Back to idle.")
@@ -96,16 +101,15 @@ def handle_pickup_flow(qr_data):
     print("  └─────────────────────────────────┘")
     print()
 
-    # Step 2: Wait for NFC (binding mode — any tag is accepted)
     uid = wait_for_tag(timeout_seconds=SESSION_TIMEOUT)
     if not uid:
         print("[FLOW] Timeout — no tray detected. Back to idle.")
         return
 
-    # Step 3: Complete session (bind tag to wallet)
     result = complete_session(session_id, uid)
     if result:
         print(f"[FLOW] ✅ Tray {uid} linked to {wallet}")
+        clear_ignored()
     else:
         print(f"[FLOW] ❌ Failed to complete session")
 
@@ -116,39 +120,47 @@ def handle_pickup_flow(qr_data):
 
 def try_return(nfc_uid):
     """
-    NFC detected without active QR session.
-    Ask the backend if this tag is associated.
-    - If associated → return flow (photo + score)
-    - If not associated → silent ignore
-    Returns True if a real return happened, False otherwise.
+    NFC in idle mode. Two-step approach:
+    1. Call backend WITHOUT photo to check if tag is associated
+    2. If it IS associated (return), take photo and send again with photo
     """
-    if is_on_cooldown(nfc_uid):
+    if is_ignored_cooldown(nfc_uid):
         return False
 
-    photo_path = None
-    if qr_mode == "camera":
-        ts = int(time.time())
-        photo_path = capture_photo(f"return_{nfc_uid.replace(':', '')}_{ts}.jpg")
-
-    result = deposit_return(nfc_uid, photo_path)
+    # Step 1: lightweight check — no photo, no camera switch
+    print(f"[NFC] Tag {nfc_uid} — checking association...")
+    result = deposit_return(nfc_uid, photo_path=None)
 
     if not result:
+        mark_ignored(nfc_uid)
+        return False
+
+    if result.get("action") == "ignored":
+        mark_ignored(nfc_uid)
         return False
 
     if result.get("action") == "return":
         score = result.get("score", 0)
         wallet = result.get("wallet", "?")
         print(f"\n{'─' * 40}")
-        print(f"[RETURN] Tray {nfc_uid} returned by {wallet}")
-        print()
-        print(f"  ✅ +{score} pts")
-        print()
+        print(f"[RETURN] ✅ Tray {nfc_uid} returned by {wallet}")
+        print(f"  +{score} pts")
+
+        # Step 2: now take a photo for analysis (optional, for stats)
+        if qr_mode == "camera":
+            ts = int(time.time())
+            photo_path = capture_photo(f"return_{nfc_uid.replace(':', '')}_{ts}.jpg")
+            if photo_path:
+                print("[RETURN] Photo captured — sending for analysis...")
+                # TODO: send photo to /api/analyze separately for stats
+                # For now the score was already calculated without photo
+
         print("[RETURN] Remove the tray...")
         wait_for_removal()
+        clear_ignored()
         print(f"{'─' * 40}\n")
         return True
 
-    # "ignored" = tag not associated → stay silent, no log spam
     return False
 
 
@@ -158,42 +170,45 @@ def try_return(nfc_uid):
 
 def run_camera_loop():
     """
-    Camera mode: continuous QR scanning + NFC polling.
-    - Camera captures frames looking for QR
-    - Between frames, quick NFC check for tray returns
-    - NFC only triggers return flow if tag is actually associated
+    Camera mode: scan QR frames + quick NFC check.
+    NFC check is lightweight (no photo, no camera switch).
     """
     init_camera()
     print("[LOOP] Camera mode — scanning for QR codes and NFC tags...\n")
 
+    frame_count = 0
+    last_status = time.time()
+
     while True:
-        # Quick NFC check (non-blocking, 100ms)
+        # Quick NFC check (100ms, no camera switch)
         uid = read_uid(timeout=0.1)
         if uid:
             try_return(uid)
-            # Don't "continue" here: even if ignored,
-            # keep scanning QR on the same iteration
 
-        # Scan camera for QR (one frame, fast)
+        # Scan one frame for QR
         qr_data = read_qr_camera()
+        frame_count += 1
+
         if qr_data and "s" in qr_data:
             handle_pickup_flow(qr_data)
+            frame_count = 0
             continue
+
+        # Status log every 10 seconds
+        now = time.time()
+        if now - last_status > 10:
+            print(f"  [scanning... {frame_count} frames, no QR yet]")
+            last_status = now
 
         time.sleep(0.05)
 
 
 def run_manual_loop():
-    """
-    Manual mode: interactive QR input.
-    Checks NFC between prompts for tray returns.
-    """
+    """Manual mode: paste QR + NFC check between prompts."""
     while True:
-        # Check NFC (returns silently if tag is not associated)
         uid = read_uid(timeout=NFC_TIMEOUT)
         if uid:
-            returned = try_return(uid)
-            if returned:
+            if try_return(uid):
                 continue
 
         print("\n[IDLE] Waiting for QR input (or NFC tray return)...")
@@ -209,15 +224,11 @@ def run_manual_loop():
 
 
 def run_file_loop():
-    """
-    File mode: reads QR from image file periodically.
-    Also polls NFC for tray returns.
-    """
+    """File mode: read QR from image + NFC check."""
     while True:
         uid = read_uid(timeout=NFC_TIMEOUT)
         if uid:
-            returned = try_return(uid)
-            if returned:
+            if try_return(uid):
                 continue
 
         qr_data = read_qr_file(QR_IMAGE_PATH)
@@ -230,7 +241,6 @@ def run_file_loop():
 
 def main():
     banner()
-
     print("[INIT] Initializing NFC reader...")
     init_nfc()
 
