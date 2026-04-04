@@ -23,11 +23,14 @@ export async function POST(req: NextRequest) {
     const result = validateSession(session_id, station_id);
 
     if (!result.valid) {
+      console.log(`[SESSION] validate REJECTED: ${result.error}`);
       return NextResponse.json(
         { valid: false, error: result.error },
         { status: 400 },
       );
     }
+
+    console.log(`[SESSION] validate OK → status is now "scanned" | wallet=${result.session!.wallet} action=${result.session!.action}`);
 
     return NextResponse.json({
       valid: true,
