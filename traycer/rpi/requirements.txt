@@ -1,0 +1,15 @@
+# Traycer Station — RPi dependencies
+# Install: pip install -r requirements.txt
+
+requests>=2.31
+
+# NFC (PN532 via I2C)
+adafruit-circuitpython-pn532>=2.3
+adafruit-blinka>=8.0
+
+# QR decoding (for file and camera modes)
+pyzbar>=0.1.9
+Pillow>=10.0
+
+# Camera (uncomment when Pi camera is available)
+# picamera2>=0.3

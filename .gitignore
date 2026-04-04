@@ -1,0 +1,25 @@
+# Traycer / Next.js
+traycer/node_modules/
+traycer/.next/
+traycer/out/
+traycer/.vercel
+traycer/.env*
+traycer/*.tsbuildinfo
+traycer/next-env.d.ts
+traycer/.pnpm-debug.log*
+
+# Python (RPi / vlm-service)
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/venv/
+*.egg-info/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log
