@@ -5,6 +5,7 @@ import { Card, CardTitle } from "@/components/card";
 import { ScoreRing } from "@/components/score-ring";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { PickupModal } from "@/components/pickup-modal";
+import { ReturnModal } from "@/components/return-modal";
 import { useAuth } from "@/lib/auth-context";
 import { useMiniKit } from "@/lib/minikit-provider";
 import {
@@ -16,6 +17,7 @@ import {
   Nfc,
   Users,
   Target,
+  Undo2,
 } from "lucide-react";
 import { MiniKit } from "@worldcoin/minikit-js";
 import Link from "next/link";
@@ -45,9 +47,10 @@ interface CommunityData {
 }
 
 export default function HomePage() {
-  const { isConnected, walletAddress, username, plate, setAuth } = useAuth();
+  const { isConnected, walletAddress, username, plate, setPlate, setAuth } = useAuth();
   const { isReady: isInWorldApp } = useMiniKit();
   const [pickupOpen, setPickupOpen] = useState(false);
+  const [returnModalOpen, setReturnModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
 
@@ -58,13 +61,27 @@ export default function HomePage() {
   const fetchDashboard = useCallback(async () => {
     if (!walletAddress) return;
     try {
-      const res = await fetch(`/api/user?wallet=${encodeURIComponent(walletAddress)}`);
+      const [res, statusRes] = await Promise.all([
+        fetch(`/api/user?wallet=${encodeURIComponent(walletAddress)}`),
+        fetch(`/api/session/status?wallet=${encodeURIComponent(walletAddress)}`),
+      ]);
       const data = await res.json();
+      const statusData = await statusRes.json();
+
       if (data.user) setUserData(data.user);
       if (data.last_deposit) setLastDeposit(data.last_deposit);
       if (data.community) setCommunity(data.community);
+
+      if (statusData.plate) {
+        setPlate({
+          nfcUid: statusData.plate.nfc_uid,
+          associatedAt: statusData.plate.associated_at,
+        });
+      } else {
+        setPlate(null);
+      }
     } catch { /* silent */ }
-  }, [walletAddress]);
+  }, [walletAddress, setPlate]);
 
   useEffect(() => {
     if (isConnected && walletAddress) {
@@ -181,11 +198,19 @@ export default function HomePage() {
 
       {/* Plate status + CTA */}
       {plate ? (
-        <div className="flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5">
-          <Nfc className="h-4 w-4 text-primary" />
-          <span className="text-sm">Active tray:</span>
-          <span className="font-mono text-xs text-muted-foreground">{plate.nfcUid}</span>
-        </div>
+        <button
+          onClick={() => setReturnModalOpen(true)}
+          className="flex w-full items-center justify-between rounded-xl bg-accent px-4 py-3 transition-colors active:bg-accent/80"
+        >
+          <div className="flex items-center gap-2">
+            <Undo2 className="h-4 w-4 text-primary" />
+            <div className="flex flex-col items-start">
+              <span className="text-sm font-medium">Return tray</span>
+              <span className="font-mono text-[10px] text-muted-foreground">{plate.nfcUid}</span>
+            </div>
+          </div>
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        </button>
       ) : (
         <button
           onClick={() => { setPickupOpen(true); setLoading(true); }}
@@ -321,8 +346,9 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Pickup modal */}
+      {/* Modals */}
       <PickupModal open={pickupOpen} onClose={() => { setPickupOpen(false); setLoading(false); fetchDashboard(); }} />
+      <ReturnModal open={returnModalOpen} onClose={() => { setReturnModalOpen(false); fetchDashboard(); }} />
     </div>
   );
 }

@@ -26,8 +26,16 @@ from config import (
     NFC_TIMEOUT,
 )
 from nfc_reader import init_nfc, read_uid, wait_for_tag, wait_for_removal
-from qr_reader import read_qr_manual, read_qr_file, read_qr_camera, init_camera, capture_photo
-from backend_client import validate_session, complete_session, deposit_return
+from qr_reader import read_qr_manual, read_qr_file, read_qr_camera, init_camera, capture_photo, pause_camera, resume_camera, warmup_still, snap_still
+from backend_client import (
+    validate_session,
+    complete_session,
+    check_plate,
+    deposit_return,
+    signal_return_ready,
+    poll_capture_signal,
+    signal_return_done,
+)
 
 
 # ──────────────────────────────────────────
@@ -101,9 +109,12 @@ def handle_pickup_flow(qr_data):
     print("  └─────────────────────────────────┘")
     print()
 
+    pause_camera()
+
     uid = wait_for_tag(timeout_seconds=SESSION_TIMEOUT)
     if not uid:
         print("[FLOW] Timeout — no tray detected. Back to idle.")
+        resume_camera()
         return
 
     result = complete_session(session_id, uid)
@@ -115,53 +126,87 @@ def handle_pickup_flow(qr_data):
 
     print("[FLOW] Remove the tray from the reader...")
     wait_for_removal()
+    resume_camera()
     print(f"{'─' * 40}\n")
+
+
+CAPTURE_POLL_TIMEOUT = 120  # seconds
 
 
 def try_return(nfc_uid):
     """
-    NFC in idle mode. Two-step approach:
-    1. Call backend WITHOUT photo to check if tag is associated
-    2. If it IS associated (return), take photo and send again with photo
+    NFC in idle mode. Web-signaled approach:
+    1. Lightweight check — is this tag associated?
+    2. Signal backend "ready" → web shows confetti
+    3. Poll for "capture" signal from web user (timeout 120s)
+    4. Take ONE photo, call /api/deposit, signal "done"
     """
     if is_ignored_cooldown(nfc_uid):
         return False
 
-    # Step 1: lightweight check — no photo, no camera switch
     print(f"[NFC] Tag {nfc_uid} — checking association...")
-    result = deposit_return(nfc_uid, photo_path=None)
+    result = check_plate(nfc_uid)
 
     if not result:
         mark_ignored(nfc_uid)
         return False
 
-    if result.get("action") == "ignored":
-        mark_ignored(nfc_uid)
-        return False
+    wallet = result.get("wallet", "?")
+    print(f"\n{'─' * 40}")
+    print(f"[RETURN] Tray {nfc_uid} belongs to {wallet}")
 
-    if result.get("action") == "return":
-        score = result.get("score", 0)
-        wallet = result.get("wallet", "?")
-        print(f"\n{'─' * 40}")
-        print(f"[RETURN] ✅ Tray {nfc_uid} returned by {wallet}")
-        print(f"  +{score} pts")
+    pause_camera()
 
-        # Step 2: now take a photo for analysis (optional, for stats)
+    if not signal_return_ready(nfc_uid):
+        print("[RETURN] Failed to signal ready — falling back to Enter")
+        input("[RETURN] Press ENTER to capture...")
+    else:
+        # Start camera in still mode NOW so it warms up (AE/AWB/AF) while waiting
         if qr_mode == "camera":
-            ts = int(time.time())
-            photo_path = capture_photo(f"return_{nfc_uid.replace(':', '')}_{ts}.jpg")
-            if photo_path:
-                print("[RETURN] Photo captured — sending for analysis...")
-                # TODO: send photo to /api/analyze separately for stats
-                # For now the score was already calculated without photo
+            warmup_still()
 
-        print("[RETURN] Remove the tray...")
-        wait_for_removal()
-        clear_ignored()
-        print(f"{'─' * 40}\n")
-        return True
+        print("[RETURN] Waiting for web user to press 'Done'...")
+        start = time.time()
+        while time.time() - start < CAPTURE_POLL_TIMEOUT:
+            if poll_capture_signal(nfc_uid):
+                print("[RETURN] Capture signal received!")
+                break
+            time.sleep(1)
+        else:
+            print("[RETURN] Timeout — no capture signal. Skipping photo.")
+            signal_return_done(nfc_uid)
+            deposit = deposit_return(nfc_uid, photo_path=None)
+            if deposit and deposit.get("action") == "return":
+                print(f"[RETURN] ✅ +{deposit.get('score', 0)} pts (no photo)")
+            print("[RETURN] Remove the tray...")
+            wait_for_removal()
+            resume_camera()
+            clear_ignored()
+            print(f"{'─' * 40}\n")
+            return True
 
-    return False
+    photo_path = None
+    if qr_mode == "camera":
+        ts = int(time.time())
+        photo_path = snap_still(f"return_{nfc_uid.replace(':', '')}_{ts}.jpg")
+        if photo_path:
+            print(f"[RETURN] Photo captured: {photo_path}")
+
+    deposit = deposit_return(nfc_uid, photo_path=photo_path)
+    signal_return_done(nfc_uid)
+
+    if deposit and deposit.get("action") == "return":
+        score = deposit.get("score", 0)
+        print(f"[RETURN] ✅ +{score} pts for {wallet}")
+    else:
+        print("[RETURN] ❌ Deposit failed")
+
+    print("[RETURN] Remove the tray...")
+    wait_for_removal()
+    resume_camera()
+    clear_ignored()
+    print(f"{'─' * 40}\n")
+    return True
 
 
 # ──────────────────────────────────────────

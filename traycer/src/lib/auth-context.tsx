@@ -5,6 +5,7 @@ import {
   useContext,
   useState,
   useCallback,
+  useEffect,
   ReactNode,
 } from "react";
 
@@ -43,7 +44,20 @@ interface AuthContextType extends AuthState {
   setLastDeposit: (deposit: DepositResult | null) => void;
 }
 
+const AUTH_STORAGE_KEY = "traycer_auth";
+
 const AuthContext = createContext<AuthContextType | null>(null);
+
+function loadPersistedAuth(): { wallet: string; username: string } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data.wallet && data.username) return data;
+  } catch { /* corrupted */ }
+  return null;
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({
@@ -54,13 +68,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     lastDeposit: null,
   });
 
+  useEffect(() => {
+    const persisted = loadPersistedAuth();
+    if (persisted) {
+      setState((prev) => ({
+        ...prev,
+        walletAddress: persisted.wallet,
+        username: persisted.username,
+        isConnected: true,
+      }));
+    }
+  }, []);
+
   const setAuth = useCallback((wallet: string, username: string) => {
+    const displayName = username || wallet.slice(0, 6) + "..." + wallet.slice(-4);
     setState((prev) => ({
       ...prev,
       walletAddress: wallet,
-      username: username || wallet.slice(0, 6) + "..." + wallet.slice(-4),
+      username: displayName,
       isConnected: true,
     }));
+    try {
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ wallet, username: displayName }));
+    } catch { /* quota */ }
   }, []);
 
   const clearAuth = useCallback(() => {
@@ -71,6 +101,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       plate: null,
       lastDeposit: null,
     });
+    try {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+    } catch { /* ignore */ }
   }, []);
 
   const setPlate = useCallback((plate: PlateAssociation | null) => {

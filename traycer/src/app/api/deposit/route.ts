@@ -58,6 +58,7 @@ export async function POST(req: NextRequest) {
       analysis,
       score,
       !!photo_base64,
+      photo_base64 || undefined,
     );
 
     console.log("[SERVER /api/deposit] Deposit recorded:", deposit.id, "score:", score);

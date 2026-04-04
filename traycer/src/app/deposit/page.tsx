@@ -11,6 +11,9 @@ import {
   Recycle,
   Sparkles,
   ArrowLeft,
+  Camera,
+  ChevronRight,
+  Clock,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -18,6 +21,7 @@ interface DepositData {
   id: string;
   score: number;
   nfc_uid: string;
+  photo_stored: boolean;
   created_at: number;
   analysis: {
     items: Array<{
@@ -44,6 +48,7 @@ export default function DepositPage() {
 function DepositContent() {
   const { walletAddress } = useAuth();
   const [deposit, setDeposit] = useState<DepositData | null>(null);
+  const [allDeposits, setAllDeposits] = useState<DepositData[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -51,12 +56,14 @@ function DepositContent() {
       setLoading(false);
       return;
     }
-    fetch(`/api/user?wallet=${encodeURIComponent(walletAddress)}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.last_deposit) {
-          setDeposit(data.last_deposit);
-        }
+
+    Promise.all([
+      fetch(`/api/user?wallet=${encodeURIComponent(walletAddress)}`).then((r) => r.json()),
+      fetch(`/api/user/deposits?wallet=${encodeURIComponent(walletAddress)}`).then((r) => r.json()),
+    ])
+      .then(([userData, depositsData]) => {
+        if (userData.last_deposit) setDeposit(userData.last_deposit);
+        if (depositsData.deposits) setAllDeposits(depositsData.deposits);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -98,6 +105,14 @@ function DepositContent() {
     clean: analysis?.clean_return ? 4 : 0,
   };
 
+  const timeAgo = (ts: number) => {
+    const diff = Math.floor((Date.now() - ts) / 60000);
+    if (diff < 1) return "just now";
+    if (diff < 60) return `${diff}m ago`;
+    if (diff < 1440) return `${Math.floor(diff / 60)}h ago`;
+    return `${Math.floor(diff / 1440)}d ago`;
+  };
+
   return (
     <div className="flex flex-col gap-4 px-4 pt-6">
       {/* Header */}
@@ -115,6 +130,23 @@ function DepositContent() {
           </p>
         </div>
       </div>
+
+      {/* Photo */}
+      {deposit.photo_stored && (
+        <Card className="overflow-hidden p-0">
+          <div className="flex items-center gap-2 px-4 pt-3 pb-2">
+            <Camera className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium">Tray photo</span>
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={`/api/deposit/photo?id=${deposit.id}`}
+            alt="Tray photo"
+            className="w-full object-cover"
+            style={{ maxHeight: 240 }}
+          />
+        </Card>
+      )}
 
       {/* Score */}
       <Card className="flex flex-col items-center gap-4 py-6">
@@ -211,6 +243,46 @@ function DepositContent() {
           <p className="mt-2 text-right text-xs text-muted-foreground">
             Confidence: {Math.round(analysis.confidence * 100)}%
           </p>
+        </Card>
+      )}
+
+      {/* Return history */}
+      {allDeposits.length > 1 && (
+        <Card>
+          <CardTitle className="flex items-center gap-2">
+            <Clock className="h-4 w-4" />
+            Return history
+          </CardTitle>
+          <div className="mt-3 flex flex-col gap-2">
+            {allDeposits.map((d) => (
+              <div
+                key={d.id}
+                className={`flex items-center justify-between rounded-lg px-3 py-2.5 transition-colors ${
+                  d.id === deposit.id ? "bg-primary/10 ring-1 ring-primary/30" : "bg-muted/50"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  {d.photo_stored ? (
+                    <Camera className="h-4 w-4 text-muted-foreground" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                  )}
+                  <div className="flex flex-col">
+                    <span className="text-sm font-medium">+{d.score} pts</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {timeAgo(d.created_at)}
+                    </span>
+                  </div>
+                </div>
+                {d.photo_stored && (
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <span>Photo</span>
+                    <ChevronRight className="h-3 w-3" />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </Card>
       )}
     </div>

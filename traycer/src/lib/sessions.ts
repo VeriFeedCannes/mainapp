@@ -18,8 +18,18 @@ export interface PlateAssociation {
   associated_at: number;
 }
 
+export type ReturnSignalStatus = "waiting" | "capture" | "done";
+
+export interface ReturnSignal {
+  nfc_uid: string;
+  wallet: string;
+  status: ReturnSignalStatus;
+  created_at: number;
+}
+
 const sessions = new Map<string, Session>();
 const plateAssociations = new Map<string, PlateAssociation>();
+const returnSignals = new Map<string, ReturnSignal>();
 
 const STATION_SECRET = process.env.STATION_SECRET || "dev-station-secret";
 const SESSION_TTL = 120_000; // 2 minutes
@@ -161,6 +171,39 @@ export function removePlateAssociation(nfc_uid: string): PlateAssociation | null
     return assoc;
   }
   return null;
+}
+
+// ── Return signals ──
+
+export function createReturnSignal(nfc_uid: string, wallet: string): ReturnSignal {
+  const signal: ReturnSignal = { nfc_uid, wallet, status: "waiting", created_at: Date.now() };
+  returnSignals.set(nfc_uid, signal);
+  return signal;
+}
+
+export function getReturnSignalByWallet(wallet: string): ReturnSignal | null {
+  for (const sig of returnSignals.values()) {
+    if (sig.wallet === wallet && sig.status !== "done") return sig;
+  }
+  return null;
+}
+
+export function getReturnSignalByUid(nfc_uid: string): ReturnSignal | null {
+  return returnSignals.get(nfc_uid) ?? null;
+}
+
+export function setReturnSignalCapture(wallet: string): boolean {
+  for (const sig of returnSignals.values()) {
+    if (sig.wallet === wallet && sig.status === "waiting") {
+      sig.status = "capture";
+      return true;
+    }
+  }
+  return false;
+}
+
+export function clearReturnSignal(nfc_uid: string): void {
+  returnSignals.delete(nfc_uid);
 }
 
 export function buildQrPayload(session: Session) {

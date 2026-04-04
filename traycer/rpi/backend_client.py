@@ -66,6 +66,78 @@ def complete_session(session_id, nfc_uid):
         return None
 
 
+def check_plate(nfc_uid):
+    """GET /api/plate/check — check if tag is associated (read-only, no side effects)."""
+    try:
+        res = requests.get(
+            f"{BACKEND_URL}/api/plate/check",
+            params={"nfc_uid": nfc_uid},
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        data = res.json()
+        if data.get("associated"):
+            print(f"[API] Plate check — associated to {data.get('wallet')}")
+            return data
+        print("[API] Plate check — not associated")
+        return None
+    except Exception as e:
+        print(f"[API] check_plate error: {e}")
+        return None
+
+
+def signal_return_ready(nfc_uid):
+    """POST /api/return/signal — tell backend the NFC tag is on the reader."""
+    try:
+        res = requests.post(
+            f"{BACKEND_URL}/api/return/signal",
+            json={"nfc_uid": nfc_uid, "action": "ready"},
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        data = res.json()
+        if data.get("ok"):
+            print(f"[API] Return signal: ready — wallet={data.get('signal', {}).get('wallet')}")
+            return True
+        print(f"[API] Return signal failed: {data.get('error')}")
+        return False
+    except Exception as e:
+        print(f"[API] signal_return_ready error: {e}")
+        return False
+
+
+def poll_capture_signal(nfc_uid):
+    """GET /api/return/signal — check if web user triggered capture."""
+    try:
+        res = requests.get(
+            f"{BACKEND_URL}/api/return/signal",
+            params={"nfc_uid": nfc_uid},
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+        data = res.json()
+        signal = data.get("signal")
+        if signal and signal.get("status") == "capture":
+            return True
+        return False
+    except Exception as e:
+        print(f"[API] poll_capture_signal error: {e}")
+        return False
+
+
+def signal_return_done(nfc_uid):
+    """POST /api/return/signal — clear the return signal after completion."""
+    try:
+        requests.post(
+            f"{BACKEND_URL}/api/return/signal",
+            json={"nfc_uid": nfc_uid, "action": "done"},
+            headers=HEADERS,
+            timeout=TIMEOUT,
+        )
+    except Exception:
+        pass
+
+
 def deposit_return(nfc_uid, photo_path=None):
     """
     POST /api/deposit

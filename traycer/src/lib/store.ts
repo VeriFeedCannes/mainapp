@@ -1,4 +1,9 @@
 import type { AnalysisResult } from "./analyzer";
+import fs from "fs";
+import path from "path";
+
+const DATA_DIR = path.join(process.cwd(), "data");
+const STORE_FILE = path.join(DATA_DIR, "store.json");
 
 export interface UserRecord {
   wallet: string;
@@ -18,6 +23,7 @@ export interface DepositRecord {
   wallet: string;
   nfc_uid: string;
   photo_stored: boolean;
+  photo_base64?: string;
   analysis: AnalysisResult | null;
   score: number;
   created_at: number;
@@ -38,6 +44,55 @@ let community: CommunityStats = {
   goal_today: 50,
   last_reset_day: todayStr(),
 };
+
+// ── Persistence ──
+
+interface StoreSnapshot {
+  users: UserRecord[];
+  deposits: Array<Omit<DepositRecord, "photo_base64">>;
+  community: CommunityStats;
+}
+
+function persistToFile(): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+    const snapshot: StoreSnapshot = {
+      users: Array.from(users.values()),
+      deposits: deposits.map(({ photo_base64: _, ...rest }) => rest),
+      community,
+    };
+
+    fs.writeFileSync(STORE_FILE, JSON.stringify(snapshot, null, 2));
+  } catch (e) {
+    console.error("[STORE] Persist error:", e);
+  }
+}
+
+function loadFromFile(): void {
+  try {
+    if (!fs.existsSync(STORE_FILE)) return;
+
+    const raw = fs.readFileSync(STORE_FILE, "utf-8");
+    const data: StoreSnapshot = JSON.parse(raw);
+
+    users.clear();
+    for (const u of data.users) users.set(u.wallet, u);
+
+    deposits.length = 0;
+    for (const d of data.deposits) deposits.push(d as DepositRecord);
+
+    if (data.community) {
+      community = data.community;
+    }
+
+    console.log(`[STORE] Loaded ${users.size} users, ${deposits.length} deposits from disk`);
+  } catch (e) {
+    console.error("[STORE] Load error:", e);
+  }
+}
+
+loadFromFile();
 
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
@@ -90,9 +145,11 @@ export function getOrCreateUser(wallet: string, username?: string): UserRecord {
       created_at: Date.now(),
     };
     users.set(wallet, user);
+    persistToFile();
   }
   if (username && user.username !== username) {
     user.username = username;
+    persistToFile();
   }
   return user;
 }
@@ -109,6 +166,7 @@ export function recordDeposit(
   analysis: AnalysisResult | null,
   score: number,
   hasPhoto: boolean,
+  photoBase64?: string,
 ): DepositRecord {
   resetDayIfNeeded();
 
@@ -117,6 +175,7 @@ export function recordDeposit(
     wallet,
     nfc_uid,
     photo_stored: hasPhoto,
+    photo_base64: photoBase64,
     analysis,
     score,
     created_at: Date.now(),
@@ -157,7 +216,12 @@ export function recordDeposit(
     user.badges.push("community-goal");
   }
 
+  persistToFile();
   return deposit;
+}
+
+export function getDeposit(id: string): DepositRecord | null {
+  return deposits.find((d) => d.id === id) ?? null;
 }
 
 export function getDepositsByWallet(wallet: string): DepositRecord[] {

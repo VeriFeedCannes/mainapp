@@ -104,7 +104,7 @@ export function PickupModal({ open, onClose }: PickupModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
       <div className="fixed inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative z-10 mx-4 mb-4 w-full max-w-md rounded-2xl bg-card p-6 shadow-xl sm:mb-0">
+      <div className="relative z-10 mx-4 mb-[26px] w-full max-w-md rounded-2xl bg-card p-6 shadow-xl sm:mb-0">
         <button
           onClick={onClose}
           className="absolute right-4 top-4 rounded-full bg-muted p-1.5 text-muted-foreground transition-colors hover:bg-border"

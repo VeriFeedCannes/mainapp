@@ -59,3 +59,21 @@ body {
 * {
   border-color: var(--border);
 }
+
+@keyframes traycer-confetti-fall {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(var(--confetti-rot, 0deg)) scale(1);
+    opacity: 1;
+    filter: brightness(1);
+  }
+  55% {
+    opacity: 1;
+    filter: brightness(1.05);
+  }
+  100% {
+    transform: translate3d(var(--confetti-tx, 0px), 100vh, 0)
+      rotate(calc(var(--confetti-rot, 0deg) + 540deg)) scale(0.85);
+    opacity: 0;
+    filter: brightness(0.95);
+  }
+}
