@@ -33,8 +33,13 @@ interface LastDepositData {
   id: string;
   score: number;
   analysis: {
-    waste_percent: number;
-    items: Array<{ name: string }>;
+    items: Array<{
+      name: string;
+      consumption_state: string;
+      estimated_percent_left: number;
+    }>;
+    tray_completeness: string;
+    overall_confidence: number;
     notes: string;
   } | null;
   created_at: number;
@@ -267,7 +272,7 @@ export default function HomePage() {
                 {lastDeposit.analysis && (
                   <>
                     <p className="text-sm">
-                      Waste: {lastDeposit.analysis.waste_percent}%
+                      {lastDeposit.analysis.items.length} items detected
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {lastDeposit.analysis.items.map((i) => i.name).join(", ")}

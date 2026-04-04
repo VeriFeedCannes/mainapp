@@ -5,7 +5,16 @@ import { Card, CardTitle } from "@/components/card";
 import { BadgeItem } from "@/components/badge-item";
 import { useAuth } from "@/lib/auth-context";
 import { useMiniKit } from "@/lib/minikit-provider";
-import { Trophy, Medal, Crown, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
+import {
+  Trophy,
+  Medal,
+  Crown,
+  Loader2,
+  AlertCircle,
+  CheckCircle2,
+  ShieldCheck,
+  Gift,
+} from "lucide-react";
 import { MiniKit, VerificationLevel } from "@worldcoin/minikit-js";
 
 type Tab = "badges" | "leaderboard";
@@ -16,10 +25,7 @@ const ALL_BADGES = [
   { id: "committed-7", icon: "💪", title: "Committed (x7)", description: "Return 7 trays" },
   { id: "streak-3", icon: "🔥", title: "3-Day Streak", description: "3 consecutive days" },
   { id: "streak-7", icon: "⚡", title: "7-Day Streak", description: "7 consecutive days" },
-  { id: "clean-return", icon: "✨", title: "Clean Return", description: "Return a perfectly clean tray" },
-  { id: "sorting-pro", icon: "♻️", title: "Sorting Pro", description: "5 correct sorts in a row" },
   { id: "community-goal", icon: "🌍", title: "Community Goal", description: "Help reach today's goal" },
-  { id: "premium-unlocked", icon: "👁️", title: "Premium Claim", description: "Complete iris enrollment" },
 ];
 
 interface LeaderEntry {
@@ -29,11 +35,20 @@ interface LeaderEntry {
   returns: number;
 }
 
+interface RewardTier {
+  id: string;
+  title: string;
+  cost: number;
+  verification_level: "device" | "orb";
+}
+
+interface ClaimData {
+  reward_type: string;
+  created_at: number;
+}
+
 export default function RewardsPage() {
   const [tab, setTab] = useState<Tab>("badges");
-  const [claimLoading, setClaimLoading] = useState(false);
-  const [claimError, setClaimError] = useState<string | null>(null);
-  const [claimSuccess, setClaimSuccess] = useState(false);
   const { isConnected, walletAddress } = useAuth();
   const { isReady: isInWorldApp } = useMiniKit();
 
@@ -43,11 +58,19 @@ export default function RewardsPage() {
   const [rank, setRank] = useState<number | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderEntry[]>([]);
 
+  const [tiers, setTiers] = useState<RewardTier[]>([]);
+  const [userClaims, setUserClaims] = useState<ClaimData[]>([]);
+
   const fetchData = useCallback(async () => {
     if (!walletAddress) return;
     try {
-      const res = await fetch(`/api/user?wallet=${encodeURIComponent(walletAddress)}`);
-      const data = await res.json();
+      const [userRes, claimsRes] = await Promise.all([
+        fetch(`/api/user?wallet=${encodeURIComponent(walletAddress)}`),
+        fetch(`/api/rewards/claim?wallet=${encodeURIComponent(walletAddress)}`),
+      ]);
+      const data = await userRes.json();
+      const claimsData = await claimsRes.json();
+
       if (data.user) {
         setUserBadges(data.user.badges ?? []);
         setTotalScore(data.user.total_score ?? 0);
@@ -55,54 +78,14 @@ export default function RewardsPage() {
       }
       if (data.rank) setRank(data.rank);
       if (data.leaderboard) setLeaderboard(data.leaderboard);
+      if (claimsData.tiers) setTiers(claimsData.tiers);
+      if (claimsData.claims) setUserClaims(claimsData.claims);
     } catch { /* silent */ }
   }, [walletAddress]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-
-  const handleClaimReward = async () => {
-    setClaimLoading(true);
-    setClaimError(null);
-
-    if (!isInWorldApp) {
-      await new Promise((r) => setTimeout(r, 1500));
-      setClaimSuccess(true);
-      setClaimLoading(false);
-      return;
-    }
-
-    try {
-      const { finalPayload } = await MiniKit.commandsAsync.verify({
-        action: "claim-reward",
-        verification_level: VerificationLevel.Orb,
-      });
-
-      if (finalPayload.status === "error") {
-        setClaimError("Verification denied");
-        setClaimLoading(false);
-        return;
-      }
-
-      const verifyRes = await fetch("/api/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ payload: finalPayload, action: "claim-reward" }),
-      });
-      const verifyData = await verifyRes.json();
-
-      if (verifyData.status === 200) {
-        setClaimSuccess(true);
-      } else {
-        setClaimError("Verification failed. Already claimed?");
-      }
-    } catch (e: unknown) {
-      setClaimError(e instanceof Error ? e.message : "Error");
-    }
-
-    setClaimLoading(false);
-  };
 
   const badgesWithStatus = ALL_BADGES.map((b) => ({
     ...b,
@@ -112,10 +95,10 @@ export default function RewardsPage() {
   const hasActivity = totalReturns > 0;
 
   return (
-    <div className="flex flex-col gap-4 px-4 pt-6">
+    <div className="flex flex-col gap-4 px-4 pt-6 pb-8">
       <div>
         <h1 className="text-2xl font-bold">Rewards</h1>
-        <p className="text-sm text-muted-foreground">Your badges & ranking</p>
+        <p className="text-sm text-muted-foreground">Your badges, ranking & claims</p>
       </div>
 
       {/* Stats */}
@@ -218,47 +201,173 @@ export default function RewardsPage() {
         </Card>
       )}
 
-      {/* Claim reward */}
-      {claimError && (
-        <div className="flex items-center gap-2 rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400">
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          {claimError}
-        </div>
-      )}
-
-      <Card className="border-primary/30 bg-accent">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="font-semibold text-accent-foreground">
-              🎁 Free meal coupon
-            </p>
-            <p className="text-sm text-muted-foreground">Cost: 200 points</p>
-          </div>
-          {claimSuccess ? (
-            <div className="flex items-center gap-1 rounded-full bg-green-500 px-4 py-2 text-sm font-semibold text-white">
-              <CheckCircle2 className="h-4 w-4" />
-              Claimed
-            </div>
-          ) : (
-            <button
-              onClick={handleClaimReward}
-              disabled={!isConnected || claimLoading || totalScore < 200}
-              className="rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
-            >
-              {claimLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                "Claim"
-              )}
-            </button>
+      {/* Reward claims */}
+      <div className="mt-2">
+        <h2 className="mb-3 text-lg font-bold flex items-center gap-2">
+          <Gift className="h-5 w-5 text-primary" />
+          Claim rewards
+        </h2>
+        <div className="flex flex-col gap-3">
+          {tiers.map((tier) => (
+            <RewardCard
+              key={tier.id}
+              tier={tier}
+              totalScore={totalScore}
+              isConnected={isConnected}
+              isInWorldApp={isInWorldApp}
+              walletAddress={walletAddress}
+              alreadyClaimed={userClaims.some((c) => c.reward_type === tier.id)}
+              onClaimed={fetchData}
+            />
+          ))}
+          {tiers.length === 0 && (
+            <Card className="flex flex-col items-center gap-3 py-8">
+              <span className="text-4xl">🎁</span>
+              <p className="text-center text-sm text-muted-foreground">
+                Loading rewards…
+              </p>
+            </Card>
           )}
         </div>
-        {!isInWorldApp && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            Dev mode: World ID Verify will be simulated
-          </p>
-        )}
-      </Card>
+      </div>
     </div>
+  );
+}
+
+function RewardCard({
+  tier,
+  totalScore,
+  isConnected,
+  isInWorldApp,
+  walletAddress,
+  alreadyClaimed,
+  onClaimed,
+}: {
+  tier: RewardTier;
+  totalScore: number;
+  isConnected: boolean;
+  isInWorldApp: boolean;
+  walletAddress: string | null;
+  alreadyClaimed: boolean;
+  onClaimed: () => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(alreadyClaimed);
+
+  const canAfford = totalScore >= tier.cost;
+  const isOrb = tier.verification_level === "orb";
+
+  const handleClaim = async () => {
+    if (!walletAddress || loading || success) return;
+    setLoading(true);
+    setError(null);
+
+    try {
+      let proof;
+
+      if (!isInWorldApp) {
+        // Dev mode — simulate proof
+        await new Promise((r) => setTimeout(r, 800));
+        proof = {
+          nullifier_hash: `dev_${walletAddress}_${tier.id}_${Date.now()}`,
+          merkle_root: "dev",
+          proof: "dev",
+          verification_level: tier.verification_level,
+          status: "success",
+        };
+      } else {
+        const action = `claim-${tier.id}`;
+        const verificationLevel = isOrb
+          ? VerificationLevel.Orb
+          : VerificationLevel.Device;
+
+        const { finalPayload } = await MiniKit.commandsAsync.verify({
+          action,
+          signal: walletAddress,
+          verification_level: verificationLevel,
+        });
+
+        if (finalPayload.status === "error") {
+          setError("World ID verification denied");
+          setLoading(false);
+          return;
+        }
+
+        proof = finalPayload;
+      }
+
+      const res = await fetch("/api/rewards/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wallet: walletAddress,
+          reward_type: tier.id,
+          proof,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setSuccess(true);
+        onClaimed();
+      } else {
+        setError(data.error || "Claim failed");
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Error");
+    }
+
+    setLoading(false);
+  };
+
+  return (
+    <Card className={success ? "border-green-500/30 bg-green-500/5" : "border-primary/20"}>
+      <div className="flex items-center justify-between">
+        <div className="flex-1">
+          <p className="font-semibold text-card-foreground flex items-center gap-1.5">
+            {tier.title}
+            {isOrb && (
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-purple-500/15 px-2 py-0.5 text-[10px] font-medium text-purple-600 dark:text-purple-400">
+                <ShieldCheck className="h-3 w-3" />
+                Orb
+              </span>
+            )}
+          </p>
+          <p className="text-sm text-muted-foreground">{tier.cost} points</p>
+        </div>
+        {success ? (
+          <div className="flex items-center gap-1 rounded-full bg-green-500 px-4 py-2 text-sm font-semibold text-white">
+            <CheckCircle2 className="h-4 w-4" />
+            Claimed
+          </div>
+        ) : (
+          <button
+            onClick={handleClaim}
+            disabled={!isConnected || loading || !canAfford}
+            className="rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : !canAfford ? (
+              `Need ${tier.cost - totalScore} more`
+            ) : (
+              "Claim"
+            )}
+          </button>
+        )}
+      </div>
+      {error && (
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-red-500">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          {error}
+        </div>
+      )}
+      {!isInWorldApp && !success && (
+        <p className="mt-1.5 text-[10px] text-muted-foreground">
+          Dev mode — World ID verification will be simulated
+        </p>
+      )}
+    </Card>
   );
 }

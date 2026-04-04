@@ -14,34 +14,17 @@ export interface PlateAssociation {
   associatedAt: number;
 }
 
-export interface DepositResult {
-  id: string;
-  score: number;
-  wastePercent: number;
-  cleanReturn: boolean;
-  sortingCorrect: boolean;
-  items: Array<{
-    name: string;
-    estimatedPercentLeft: number;
-    category: string;
-  }>;
-  notes: string;
-  createdAt: number;
-}
-
 interface AuthState {
   walletAddress: string | null;
   username: string | null;
   isConnected: boolean;
   plate: PlateAssociation | null;
-  lastDeposit: DepositResult | null;
 }
 
 interface AuthContextType extends AuthState {
   setAuth: (wallet: string, username: string) => void;
   clearAuth: () => void;
   setPlate: (plate: PlateAssociation | null) => void;
-  setLastDeposit: (deposit: DepositResult | null) => void;
 }
 
 const AUTH_STORAGE_KEY = "traycer_auth";
@@ -65,7 +48,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     username: null,
     isConnected: false,
     plate: null,
-    lastDeposit: null,
   });
 
   useEffect(() => {
@@ -99,7 +81,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       username: null,
       isConnected: false,
       plate: null,
-      lastDeposit: null,
     });
     try {
       localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -110,13 +91,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, plate }));
   }, []);
 
-  const setLastDeposit = useCallback((deposit: DepositResult | null) => {
-    setState((prev) => ({ ...prev, lastDeposit: deposit }));
-  }, []);
-
   return (
     <AuthContext.Provider
-      value={{ ...state, setAuth, clearAuth, setPlate, setLastDeposit }}
+      value={{ ...state, setAuth, clearAuth, setPlate }}
     >
       {children}
     </AuthContext.Provider>

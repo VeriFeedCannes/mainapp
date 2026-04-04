@@ -7,9 +7,6 @@ import { useAuth } from "@/lib/auth-context";
 import {
   CheckCircle2,
   Utensils,
-  BarChart3,
-  Recycle,
-  Sparkles,
   ArrowLeft,
   Camera,
   ChevronRight,
@@ -26,13 +23,14 @@ interface DepositData {
   analysis: {
     items: Array<{
       name: string;
-      estimated_percent_left: number;
       category: string;
+      course: string;
+      estimated_percent_left: number;
+      consumption_state: string;
+      confidence: number;
     }>;
-    waste_percent: number;
-    sorting_correct: boolean;
-    clean_return: boolean;
-    confidence: number;
+    tray_completeness: string;
+    overall_confidence: number;
     notes: string;
   } | null;
 }
@@ -95,15 +93,6 @@ function DepositContent() {
   }
 
   const analysis = deposit.analysis;
-  const wastePercent = analysis?.waste_percent ?? 0;
-
-  const scoreBreakdown = {
-    returned: 10,
-    lowWaste: wastePercent < 25 ? 5 : 0,
-    veryLowWaste: wastePercent < 10 ? 3 : 0,
-    sorting: analysis?.sorting_correct ? 3 : 0,
-    clean: analysis?.clean_return ? 4 : 0,
-  };
 
   const timeAgo = (ts: number) => {
     const diff = Math.floor((Date.now() - ts) / 60000);
@@ -154,7 +143,7 @@ function DepositContent() {
           <CheckCircle2 className="h-5 w-5" />
           <span className="font-semibold">Tray returned</span>
         </div>
-        <ScoreRing score={deposit.score} maxScore={25} label="Score" />
+        <ScoreRing score={deposit.score} maxScore={10} label="Score" />
       </Card>
 
       {/* Score breakdown */}
@@ -164,40 +153,9 @@ function DepositContent() {
           <ScoreLine
             icon={<Utensils className="h-4 w-4" />}
             label="Tray returned"
-            points={scoreBreakdown.returned}
+            points={10}
+            highlight
           />
-          {scoreBreakdown.lowWaste > 0 && (
-            <ScoreLine
-              icon={<BarChart3 className="h-4 w-4" />}
-              label={`Low waste (${wastePercent}%)`}
-              points={scoreBreakdown.lowWaste}
-              highlight
-            />
-          )}
-          {scoreBreakdown.veryLowWaste > 0 && (
-            <ScoreLine
-              icon={<BarChart3 className="h-4 w-4" />}
-              label="Very low waste bonus"
-              points={scoreBreakdown.veryLowWaste}
-              highlight
-            />
-          )}
-          {scoreBreakdown.sorting > 0 && (
-            <ScoreLine
-              icon={<Recycle className="h-4 w-4" />}
-              label="Correct sorting"
-              points={scoreBreakdown.sorting}
-              highlight
-            />
-          )}
-          {scoreBreakdown.clean > 0 && (
-            <ScoreLine
-              icon={<Sparkles className="h-4 w-4" />}
-              label="Clean return"
-              points={scoreBreakdown.clean}
-              highlight
-            />
-          )}
           <div className="mt-1 border-t pt-2">
             <div className="flex items-center justify-between font-bold">
               <span>Total</span>
@@ -207,29 +165,36 @@ function DepositContent() {
         </div>
       </Card>
 
-      {/* AI analysis */}
-      {analysis && (
+      {/* Item-level analysis */}
+      {analysis && analysis.items.length > 0 && (
         <Card>
-          <CardTitle>AI Analysis</CardTitle>
+          <CardTitle>Tray items</CardTitle>
           <div className="mt-3 flex flex-col gap-2">
             {analysis.items.map((item, i) => (
               <div
                 key={`${item.name}-${i}`}
-                className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2"
+                className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2.5"
               >
-                <span className="text-sm capitalize">{item.name}</span>
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium capitalize">{item.name}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {item.category} · {item.course}
+                  </span>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground">
                     {item.estimated_percent_left}% left
                   </span>
                   <span
-                    className={`rounded-full px-2 py-0.5 text-xs ${
-                      item.estimated_percent_left > 50
-                        ? "bg-orange-500/20 text-orange-600"
-                        : "bg-green-500/20 text-green-600"
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                      item.consumption_state === "fully_eaten" || item.consumption_state === "mostly_eaten"
+                        ? "bg-green-500/15 text-green-600 dark:text-green-400"
+                        : item.consumption_state === "half_left"
+                          ? "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400"
+                          : "bg-orange-500/15 text-orange-600 dark:text-orange-400"
                     }`}
                   >
-                    {item.category}
+                    {item.consumption_state.replace("_", " ")}
                   </span>
                 </div>
               </div>
@@ -241,7 +206,7 @@ function DepositContent() {
             </p>
           )}
           <p className="mt-2 text-right text-xs text-muted-foreground">
-            Confidence: {Math.round(analysis.confidence * 100)}%
+            Confidence: {Math.round(analysis.overall_confidence * 100)}%
           </p>
         </Card>
       )}

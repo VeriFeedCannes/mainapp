@@ -41,12 +41,17 @@ export async function POST(req: NextRequest) {
 
     let analysis = null;
     if (photo_base64) {
-      console.log("[SERVER /api/deposit] Running analysis…");
+      console.log("[SERVER /api/deposit] Running item-level analysis…");
       analysis = await analyzeImage(photo_base64);
-      console.log("[SERVER /api/deposit] Analysis done, waste_percent:", analysis.waste_percent);
+      console.log(
+        "[SERVER /api/deposit] Analysis done,",
+        analysis.items.length,
+        "items detected, confidence:",
+        analysis.overall_confidence,
+      );
     }
 
-    const score = analysis ? computeScore(analysis) : 10;
+    const score = computeScore(analysis);
 
     removePlateAssociation(nfc_uid);
     console.log("[SERVER /api/deposit] Association removed, plate is free");
