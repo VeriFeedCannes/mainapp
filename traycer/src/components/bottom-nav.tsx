@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { Home, Trophy, User } from "lucide-react";
+import { Home, Trophy, User, Shield } from "lucide-react";
 
 const navItems = [
   { href: "/", icon: Home, label: "Home" },
   { href: "/rewards", icon: Trophy, label: "Rewards" },
   { href: "/deposit", icon: User, label: "Profile" },
+  { href: "/admin", icon: Shield, label: "Admin" },
 ];
 
 export function BottomNav() {

@@ -81,6 +81,7 @@ interface Redemption {
   id: string;
   badgeId: number;
   rewardType: string;
+  couponCode: string;
   txHash: string;
   createdAt: number;
 }
@@ -353,13 +354,8 @@ function FirstReturnHeroCard({
   const [error, setError] = useState<string | null>(null);
   const [justRedeemed, setJustRedeemed] = useState(false);
   const [redeemTxHash, setRedeemTxHash] = useState<string | null>(null);
+  const [redeemCoupon, setRedeemCoupon] = useState<string | null>(null);
   const [arxSignStatus, setArxSignStatus] = useState<string | null>(null);
-  const [couponCode] = useState(() => {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    const seg = () =>
-      Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-    return `${seg()}-${seg()}-${seg()}`;
-  });
 
   const badge1 = onchainBadges.find((b) => b.badgeId === 1);
   const redemption = redemptions.find((r) => r.badgeId === 1);
@@ -372,6 +368,7 @@ function FirstReturnHeroCard({
   else status = "no_returns";
 
   const txHash = redeemTxHash || redemption?.txHash;
+  const couponCode = redeemCoupon || redemption?.couponCode || null;
   const mintTxHash = badge1?.txHash;
 
   const confirmRedemption = async (txH: string) => {
@@ -385,6 +382,7 @@ function FirstReturnHeroCard({
       if (data.success || data.alreadyRedeemed) {
         setJustRedeemed(true);
         setRedeemTxHash(txH);
+        if (data.redemption?.couponCode) setRedeemCoupon(data.redemption.couponCode);
         onRedeemed();
       }
     } catch { /* silent */ }

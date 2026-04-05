@@ -69,6 +69,7 @@ export interface RedemptionRecord {
   wallet: string;
   badgeId: number;
   rewardType: string;
+  couponCode: string;
   txHash: string;
   createdAt: number;
 }
@@ -571,6 +572,13 @@ function generateRedemptionId(): string {
   return id;
 }
 
+function generateCouponCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const seg = () =>
+    Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return `${seg()}-${seg()}-${seg()}`;
+}
+
 export function hasRedeemedBadge(wallet: string, badgeId: number): boolean {
   return redemptions.some(
     (r) => r.wallet.toLowerCase() === wallet.toLowerCase() && r.badgeId === badgeId,
@@ -581,6 +589,18 @@ export function getRedemptionsByWallet(wallet: string): RedemptionRecord[] {
   return redemptions
     .filter((r) => r.wallet.toLowerCase() === wallet.toLowerCase())
     .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function getAllDeposits(): DepositRecord[] {
+  return [...deposits].sort((a, b) => b.created_at - a.created_at);
+}
+
+export function getAllRedemptions(): RedemptionRecord[] {
+  return [...redemptions].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function getAllUsers(): UserRecord[] {
+  return Array.from(users.values());
 }
 
 export function recordRedemption(
@@ -594,6 +614,7 @@ export function recordRedemption(
     wallet,
     badgeId,
     rewardType,
+    couponCode: generateCouponCode(),
     txHash,
     createdAt: Date.now(),
   };
