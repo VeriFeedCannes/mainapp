@@ -26,6 +26,7 @@ export interface TrayItem {
   name: string;
   category: ItemCategory;
   estimated_percent_left: number; // 0-100
+  estimated_cost_usd: number;
   consumption_state: ConsumptionState;
   confidence: number; // 0.0-1.0
 }
@@ -34,6 +35,7 @@ export interface TrayAnalysis {
   items: TrayItem[];
   tray_completeness: TrayCompleteness;
   overall_confidence: number; // 0.0-1.0
+  estimated_total_waste_usd: number;
   notes: string;
 }
 
@@ -56,6 +58,7 @@ const mockProvider: AnalyzerProvider = {
           name: "pasta bolognese",
           category: "starch",
           estimated_percent_left: 10,
+          estimated_cost_usd: 0.35,
           consumption_state: "mostly_eaten",
           confidence: 0.92,
         },
@@ -63,6 +66,7 @@ const mockProvider: AnalyzerProvider = {
           name: "green salad",
           category: "vegetable",
           estimated_percent_left: 40,
+          estimated_cost_usd: 0.60,
           consumption_state: "half_left",
           confidence: 0.85,
         },
@@ -70,18 +74,20 @@ const mockProvider: AnalyzerProvider = {
           name: "bread roll",
           category: "bread",
           estimated_percent_left: 60,
+          estimated_cost_usd: 0.18,
           consumption_state: "half_left",
           confidence: 0.82,
         },
       ],
       tray_completeness: "full_tray",
       overall_confidence: 0.86,
+      estimated_total_waste_usd: 1.13,
       notes: "Mock analysis — main dish mostly eaten, salad and bread partially left.",
     };
   },
 };
 
-// ── Gemini Provider (direct API call, no extra server) ──
+// ── Gemini Provider ──
 
 const GEMINI_PROMPT = `You analyze a photo of a returned cafeteria tray or plate.
 
@@ -99,12 +105,14 @@ Use this exact schema:
       "name": "string",
       "category": "protein | starch | vegetable | fruit | dairy | bread | dessert | beverage | other",
       "estimated_percent_left": 0,
+      "estimated_cost_usd": 0.0,
       "consumption_state": "fully_eaten | mostly_eaten | half_left | mostly_left | untouched",
       "confidence": 0.0
     }
   ],
   "tray_completeness": "full_tray | partial | empty_tray",
   "overall_confidence": 0.0,
+  "estimated_total_waste_usd": 0.0,
   "notes": "string"
 }
 
@@ -113,6 +121,8 @@ Rules:
 - Ignore tiny traces, crumbs, sauce residue, a few grains of rice, a few isolated pasta pieces, and any negligible leftovers.
 - If an item is present only as a trace, do not include it.
 - estimated_percent_left must be an integer between 0 and 100.
+- estimated_cost_usd is the cost of the WASTED portion only (not the full item), based on typical French cafeteria pricing (e.g. a full main dish ~3-4 USD, salad ~1.50, bread ~0.30, dessert ~1.50, beverage ~1.00). Multiply the full item price by estimated_percent_left / 100.
+- estimated_total_waste_usd is the sum of all estimated_cost_usd values.
 - confidence and overall_confidence must be numbers between 0.0 and 1.0.
 - Use short, simple item names in English.
 - If category is unclear, use "other".
@@ -135,16 +145,21 @@ function extractJson(raw: string): Record<string, unknown> {
 
 function parseVlmResult(parsed: Record<string, unknown>, provider: string): TrayAnalysis {
   const items = Array.isArray(parsed.items) ? parsed.items : [];
+  const mappedItems = items.map((item: Record<string, unknown>) => ({
+    name: String(item.name ?? "unknown"),
+    category: String(item.category ?? "other") as ItemCategory,
+    estimated_percent_left: Number(item.estimated_percent_left ?? 0),
+    estimated_cost_usd: Number(item.estimated_cost_usd ?? 0),
+    consumption_state: String(item.consumption_state ?? "fully_eaten") as ConsumptionState,
+    confidence: Number(item.confidence ?? 0.5),
+  }));
+  const totalWaste = Number(parsed.estimated_total_waste_usd ?? 0) ||
+    mappedItems.reduce((s: number, i: { estimated_cost_usd: number }) => s + i.estimated_cost_usd, 0);
   const result: TrayAnalysis = {
-    items: items.map((item: Record<string, unknown>) => ({
-      name: String(item.name ?? "unknown"),
-      category: String(item.category ?? "other") as ItemCategory,
-      estimated_percent_left: Number(item.estimated_percent_left ?? 0),
-      consumption_state: String(item.consumption_state ?? "fully_eaten") as ConsumptionState,
-      confidence: Number(item.confidence ?? 0.5),
-    })),
+    items: mappedItems,
     tray_completeness: String(parsed.tray_completeness ?? "partial") as TrayCompleteness,
     overall_confidence: Number(parsed.overall_confidence ?? 0),
+    estimated_total_waste_usd: Math.round(totalWaste * 100) / 100,
     notes: String(parsed.notes ?? ""),
   };
   console.log(
@@ -192,7 +207,7 @@ const geminiProvider: AnalyzerProvider = {
   },
 };
 
-// ── LM Studio Provider (local OpenAI-compatible, optional) ──
+// ── LM Studio Provider ──
 
 const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_BASE_URL || "http://127.0.0.1:1234";
 const LMSTUDIO_MODEL = process.env.LMSTUDIO_MODEL || "gemma-4-e4b-it";
@@ -239,7 +254,7 @@ const lmstudioProvider: AnalyzerProvider = {
   },
 };
 
-// ── VLM Service Provider (calls vlm-service Python, optional) ──
+// ── VLM Service Provider ──
 
 const VLM_SERVICE_URL = process.env.VLM_SERVICE_URL || "http://localhost:8100";
 const VLM_TIMEOUT_MS = 30_000;
@@ -305,7 +320,6 @@ export async function analyzeImage(imageBase64: string): Promise<TrayAnalysis> {
 }
 
 // ── Scoring ──
-// Participation-based: you return your tray = you earn. No moral judgment.
 
 export function computeScore(_analysis: TrayAnalysis | null): number {
   return 10;

@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronUp,
   Target,
+  DollarSign,
 } from "lucide-react";
 
 interface AdminUser {
@@ -29,6 +30,7 @@ interface TrayItem {
   name: string;
   category: string;
   estimated_percent_left: number;
+  estimated_cost_usd: number;
   consumption_state: string;
   confidence: number;
 }
@@ -37,6 +39,7 @@ interface TrayAnalysis {
   items: TrayItem[];
   tray_completeness: string;
   overall_confidence: number;
+  estimated_total_waste_usd: number;
   notes: string;
 }
 
@@ -171,6 +174,16 @@ export default function AdminPage() {
     return Math.round(sum / allItems.length);
   }, [allItems]);
 
+  const totalWasteCost = useMemo(() => {
+    let sum = 0;
+    for (const d of deposits) {
+      if (d.analysis?.estimated_total_waste_usd) {
+        sum += d.analysis.estimated_total_waste_usd;
+      }
+    }
+    return Math.round(sum * 100) / 100;
+  }, [deposits]);
+
   const goalPct = community
     ? Math.min(100, Math.round((community.trays_today / community.goal_today) * 100))
     : 0;
@@ -198,7 +211,7 @@ export default function AdminPage() {
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <Card className="flex flex-col items-center py-3">
           <Users className="h-5 w-5 text-primary" />
           <span className="mt-1 text-lg font-bold">{users.length}</span>
@@ -213,6 +226,11 @@ export default function AdminPage() {
           <Coffee className="h-5 w-5 text-green-600" />
           <span className="mt-1 text-lg font-bold">{redemptions.length}</span>
           <span className="text-xs text-muted-foreground">Coupons</span>
+        </Card>
+        <Card className="flex flex-col items-center py-3">
+          <DollarSign className="h-5 w-5 text-red-500" />
+          <span className="mt-1 text-lg font-bold">${totalWasteCost.toFixed(2)}</span>
+          <span className="text-xs text-muted-foreground">Food wasted</span>
         </Card>
       </div>
 
@@ -407,12 +425,27 @@ export default function AdminPage() {
 
                     {d.analysis && d.analysis.items.length > 0 && (
                       <div className="flex flex-col gap-1.5">
+                        {d.analysis.estimated_total_waste_usd > 0 && (
+                          <div className="flex items-center gap-2 rounded-md bg-orange-500/10 px-2 py-1.5 mb-1">
+                            <DollarSign className="h-3 w-3 text-orange-500" />
+                            <span className="text-xs font-medium text-orange-600 dark:text-orange-400">
+                              ~${d.analysis.estimated_total_waste_usd.toFixed(2)} wasted
+                            </span>
+                          </div>
+                        )}
                         {d.analysis.items.map((item, i) => (
                           <div
                             key={`${item.name}-${i}`}
                             className="flex items-center justify-between text-xs"
                           >
-                            <span className="capitalize">{item.name}</span>
+                            <div className="flex flex-col">
+                              <span className="capitalize">{item.name}</span>
+                              {item.estimated_cost_usd > 0 && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  ~${item.estimated_cost_usd.toFixed(2)}
+                                </span>
+                              )}
+                            </div>
                             <div className="flex items-center gap-2">
                               <span className="text-muted-foreground">
                                 {item.estimated_percent_left}% left

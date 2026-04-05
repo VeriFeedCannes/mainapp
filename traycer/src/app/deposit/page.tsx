@@ -25,11 +25,13 @@ interface DepositData {
       name: string;
       category: string;
       estimated_percent_left: number;
+      estimated_cost_usd: number;
       consumption_state: string;
       confidence: number;
     }>;
     tray_completeness: string;
     overall_confidence: number;
+    estimated_total_waste_usd: number;
     notes: string;
   } | null;
 }
@@ -168,6 +170,22 @@ function DepositContent() {
       {analysis && analysis.items.length > 0 && (
         <Card>
           <CardTitle>Tray items</CardTitle>
+
+          {/* Total waste cost summary */}
+          {analysis.estimated_total_waste_usd > 0 && (
+            <div className="mt-3 flex items-center gap-3 rounded-lg bg-orange-500/10 px-3 py-2.5">
+              <span className="text-2xl">💸</span>
+              <div className="flex flex-col">
+                <span className="text-sm font-semibold text-orange-600 dark:text-orange-400">
+                  ~${analysis.estimated_total_waste_usd.toFixed(2)} wasted
+                </span>
+                <span className="text-[10px] text-muted-foreground">
+                  Estimated cost of leftover food
+                </span>
+              </div>
+            </div>
+          )}
+
           <div className="mt-3 flex flex-col gap-2">
             {analysis.items.map((item, i) => (
               <div
@@ -178,6 +196,9 @@ function DepositContent() {
                   <span className="text-sm font-medium capitalize">{item.name}</span>
                   <span className="text-[10px] text-muted-foreground">
                     {item.category}
+                    {item.estimated_cost_usd > 0 && (
+                      <> · ~${item.estimated_cost_usd.toFixed(2)} wasted</>
+                    )}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">

@@ -127,7 +127,6 @@ function loadFromFile(): void {
 
     users.clear();
     for (const u of data.users) {
-      // Ensure new fields exist on old records
       u.world_id_nullifier ??= null;
       u.world_id_verified_at ??= null;
       u.world_id_level ??= null;
@@ -235,10 +234,6 @@ export function getUser(wallet: string): UserRecord | null {
   return users.get(wallet) ?? null;
 }
 
-/**
- * DEV/TEST — full user reset: counters, badges, streaks, deposits, claims, redemptions.
- * Does NOT touch on-chain data (use resetWallet on the contract for that).
- */
 export function resetUserForDemo(wallet: string): void {
   const w = wallet.toLowerCase();
   const user = users.get(wallet) ?? users.get(w);
@@ -312,14 +307,12 @@ export function recordDeposit(
     user.best_streak = user.current_streak;
   }
 
-  // Award badges
   for (const def of BADGE_DEFS) {
     if (!user.badges.includes(def.id) && def.condition(user)) {
       user.badges.push(def.id);
     }
   }
 
-  // Auto-create on-chain claims when thresholds are crossed
   for (const def of ONCHAIN_BADGE_MAP) {
     if (user.total_returns >= def.threshold) {
       const exists = onchainClaims.some(
@@ -343,7 +336,6 @@ export function recordDeposit(
     }
   }
 
-  // Community goal
   community.trays_today += 1;
   community.trays_total += 1;
   if (community.trays_today >= community.goal_today && !user.badges.includes("community-goal")) {
@@ -542,12 +534,6 @@ export function createPremiumClaim(
   return claim;
 }
 
-/**
- * DEV/TEST helper — reset minted claims so they can be re-consumed by CRE.
- * If wallet is provided, only reset that wallet's claims.
- * If wallet is omitted, reset ALL claims.
- * Returns the number of claims reset.
- */
 export function resetClaimsForWallet(wallet?: string): number {
   let count = 0;
   for (const c of onchainClaims) {
@@ -623,10 +609,6 @@ export function recordRedemption(
   return record;
 }
 
-/**
- * DEV/TEST — remove redemption records (Coffee coupon UI state).
- * If wallet is set, only that wallet; otherwise all redemptions.
- */
 export function resetRedemptionsForWallet(wallet?: string): number {
   const before = redemptions.length;
   if (wallet) {
