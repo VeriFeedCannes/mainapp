@@ -107,6 +107,17 @@ const onCronTrigger = (runtime: Runtime<Config>): BadgeResult => {
 
   const evmClient = new EVMClient(network.chainSelector.selector);
 
+  // On-chain guard: verify the wallet doesn't already own this badge (free eth_call)
+  // const balance = evmClient.readContract(runtime, {
+  //   address: consumerAddress,
+  //   abi: "function balanceOf(address, uint256) view returns (uint256)",
+  //   args: [claim.wallet, BigInt(claim.badgeId)],
+  // }).result();
+  // if (balance > 0n) {
+  //   runtime.log(`Wallet already owns badge #${claim.badgeId} — skipping`);
+  //   return { eligible: false, badgeId: 0n, txHash: "" };
+  // }
+
   const reportData = encodeAbiParameters(
     parseAbiParameters("address wallet, uint256 badgeId, uint256 totalReturns"),
     [
