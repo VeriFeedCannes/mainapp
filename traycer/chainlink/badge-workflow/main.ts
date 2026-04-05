@@ -177,6 +177,7 @@ const fetchNextClaim = (
     .sendRequest(nodeRuntime, {
       url: `${apiBaseUrl}/api/chainlink/next-claim`,
       method: "GET" as const,
+      headers: { "ngrok-skip-browser-warning": "true" },
     })
     .result();
 
@@ -198,6 +199,7 @@ const confirmMint = (
   const payload = JSON.stringify({ claimId, txHash });
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "ngrok-skip-browser-warning": "true",
   };
   if (creWebhookSecret) {
     headers["x-cre-secret"] = creWebhookSecret;
