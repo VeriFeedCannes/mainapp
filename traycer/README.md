@@ -4,6 +4,12 @@ Gamified food tracking for cafeterias, events, and food aid programs.
 
 Return a tray, earn points and on-chain badges, redeem them for rewards. AI vision estimates food waste for venue analytics. World ID prevents abuse, Chainlink CRE automates badge minting.
 
+<p align="center">
+  <img src="docs/home.jpg" width="230" alt="Home" />
+  <img src="docs/rewards.jpg" width="230" alt="Rewards" />
+  <img src="docs/admin.jpg" width="230" alt="Admin" />
+</p>
+
 ## Setup
 
 ```bash
